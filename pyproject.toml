@@ -1,0 +1,20 @@
+[project]
+name = "pa2-grpc-rest-soap"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.129.0",
+    "google-auth>=2.48.0",
+    "google-cloud-compute>=1.43.0",
+    "httpx>=0.28.1",
+    "protobuf>=6.33.5",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "uvicorn>=0.41.0",
+    "zeep>=4.3.2",
+    "sqlalchemy>=2.0.46",
+    "grpcio>=1.78.1",
+    "grpcio-tools>=1.78.0",
+]

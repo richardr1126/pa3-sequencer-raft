@@ -1,0 +1,316 @@
+"""Product database gRPC server.
+
+- Item management (create, get, update, delete, list by seller)
+- Item search (by category and keywords)
+- Item feedback (votes)
+"""
+
+import argparse
+import concurrent.futures
+import logging
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+import grpc
+from sqlalchemy.exc import IntegrityError
+
+# Add parent directories to path for imports
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from google.protobuf.timestamp_pb2 import Timestamp
+from common.grpc_gen import product_db_pb2, product_db_pb2_grpc
+from databases.product.api import ProductDomainApi
+from databases.product.db import init_db, make_session_factory
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
+    """Product database gRPC servicer."""
+
+    def __init__(self, db_session_factory):
+        self.api = ProductDomainApi(db_session_factory)
+
+    @staticmethod
+    def _timestamp_from_iso(value: str | None) -> Timestamp | None:
+        if not value:
+            return None
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            # Domain layer emits naive UTC timestamps; normalize before protobuf conversion.
+            dt = dt.replace(tzinfo=timezone.utc)
+        ts = Timestamp()
+        ts.FromDatetime(dt)
+        return ts
+
+    @staticmethod
+    def _item_message(item: dict[str, Any]) -> product_db_pb2.Item:
+        msg = product_db_pb2.Item(
+            item_category=item["item_category"],
+            item_id=item["item_id"],
+            item_name=item["item_name"],
+            condition=item["condition"],
+            sale_price=item["sale_price"],
+            quantity=item["quantity"],
+            seller_id=item["seller_id"],
+            thumbs_up=item["thumbs_up"],
+            thumbs_down=item["thumbs_down"],
+            keywords=item["keywords"],
+        )
+        ts = ProductDbService._timestamp_from_iso(item.get("deleted_at"))
+        if ts is not None:
+            msg.deleted_at.CopyFrom(ts)
+        return msg
+
+    @staticmethod
+    def _abort_from_exception(context: grpc.ServicerContext, exc: Exception) -> None:
+        if isinstance(exc, ValueError):
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        if isinstance(exc, IntegrityError):
+            message = str(exc.orig) if exc.orig else str(exc)
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, message)
+        logger.exception("Unhandled product DB error: %s", exc)
+        context.abort(grpc.StatusCode.INTERNAL, "Internal server error")
+
+    def _execute(self, context: grpc.ServicerContext, fn: Callable[[], Any]) -> Any:
+        # Centralize exception mapping so handlers only encode/decode request/response data.
+        try:
+            return fn()
+        except Exception as exc:  # pragma: no cover - context.abort raises
+            self._abort_from_exception(context, exc)
+            raise
+
+    def CreateItem(
+        self, request: product_db_pb2.CreateItemRequest, context: grpc.ServicerContext
+    ) -> product_db_pb2.CreateItemResponse:
+        result = self._execute(
+            context,
+            lambda: self.api.create_item(
+                item_name=request.item_name,
+                item_category=request.item_category,
+                keywords=list(request.keywords),
+                condition=request.condition,
+                sale_price=request.sale_price,
+                quantity=request.quantity,
+                seller_id=request.seller_id,
+            ),
+        )
+        return product_db_pb2.CreateItemResponse(item=self._item_message(result))
+
+    def GetItem(
+        self, request: product_db_pb2.GetItemRequest, context: grpc.ServicerContext
+    ) -> product_db_pb2.GetItemResponse:
+        result = self._execute(
+            context,
+            lambda: self.api.get_item(
+                item_category=request.item_category,
+                item_id=request.item_id,
+                include_deleted=request.include_deleted,
+            ),
+        )
+        response = product_db_pb2.GetItemResponse(found=result.get("item") is not None)
+        if result.get("item") is not None:
+            response.item.CopyFrom(self._item_message(result["item"]))
+        return response
+
+    def UpdateItemPrice(
+        self,
+        request: product_db_pb2.UpdateItemPriceRequest,
+        context: grpc.ServicerContext,
+    ) -> product_db_pb2.UpdateItemPriceResponse:
+        # `seller_id` is optional: absent means no ownership check at this layer.
+        seller_id = request.seller_id if request.HasField("seller_id") else None
+        result = self._execute(
+            context,
+            lambda: self.api.update_item_price(
+                item_category=request.item_category,
+                item_id=request.item_id,
+                sale_price=request.sale_price,
+                seller_id=seller_id,
+            ),
+        )
+        return product_db_pb2.UpdateItemPriceResponse(sale_price=result["sale_price"])
+
+    def UpdateItemQuantity(
+        self,
+        request: product_db_pb2.UpdateItemQuantityRequest,
+        context: grpc.ServicerContext,
+    ) -> product_db_pb2.UpdateItemQuantityResponse:
+        quantity: int | None = None
+        quantity_delta: int | None = None
+        # `quantity_update` is a oneof: request can set absolute quantity or delta, not both.
+        quantity_mode = request.WhichOneof("quantity_update")
+        if quantity_mode == "quantity":
+            quantity = request.quantity
+        elif quantity_mode == "quantity_delta":
+            quantity_delta = request.quantity_delta
+
+        # `seller_id` is optional: absent means no ownership check at this layer.
+        seller_id = request.seller_id if request.HasField("seller_id") else None
+        result = self._execute(
+            context,
+            lambda: self.api.update_item_quantity(
+                item_category=request.item_category,
+                item_id=request.item_id,
+                quantity=quantity,
+                quantity_delta=quantity_delta,
+                seller_id=seller_id,
+            ),
+        )
+        return product_db_pb2.UpdateItemQuantityResponse(quantity=result["quantity"])
+
+    def DeleteItem(
+        self, request: product_db_pb2.DeleteItemRequest, context: grpc.ServicerContext
+    ) -> product_db_pb2.DeleteItemResponse:
+        # `seller_id` is optional: absent means no ownership check at this layer.
+        seller_id = request.seller_id if request.HasField("seller_id") else None
+        result = self._execute(
+            context,
+            lambda: self.api.delete_item(
+                item_category=request.item_category,
+                item_id=request.item_id,
+                seller_id=seller_id,
+            ),
+        )
+        return product_db_pb2.DeleteItemResponse(deleted=result["deleted"])
+
+    def ListItemsBySeller(
+        self,
+        request: product_db_pb2.ListItemsBySellerRequest,
+        context: grpc.ServicerContext,
+    ) -> product_db_pb2.ListItemsBySellerResponse:
+        result = self._execute(
+            context,
+            lambda: self.api.list_items_by_seller(
+                seller_id=request.seller_id,
+                include_deleted=request.include_deleted,
+            ),
+        )
+        return product_db_pb2.ListItemsBySellerResponse(
+            items=[self._item_message(item) for item in result["items"]]
+        )
+
+    def SearchItems(
+        self, request: product_db_pb2.SearchItemsRequest, context: grpc.ServicerContext
+    ) -> product_db_pb2.SearchItemsResponse:
+        result = self._execute(
+            context,
+            lambda: self.api.search_items(
+                item_category=request.item_category,
+                keywords=list(request.keywords),
+            ),
+        )
+        return product_db_pb2.SearchItemsResponse(
+            items=[
+                product_db_pb2.SearchItem(
+                    item=self._item_message(item),
+                    match_count=item["match_count"],
+                )
+                for item in result["items"]
+            ]
+        )
+
+    def AddFeedbackVote(
+        self,
+        request: product_db_pb2.AddFeedbackVoteRequest,
+        context: grpc.ServicerContext,
+    ) -> product_db_pb2.AddFeedbackVoteResponse:
+        result = self._execute(
+            context,
+            lambda: self.api.add_feedback_vote(
+                buyer_id=request.buyer_id,
+                item_category=request.item_category,
+                item_id=request.item_id,
+                vote=request.vote,
+            ),
+        )
+        return product_db_pb2.AddFeedbackVoteResponse(
+            thumbs_up=result["thumbs_up"],
+            thumbs_down=result["thumbs_down"],
+            seller_id=result["seller_id"],
+        )
+
+    def GetItemFeedback(
+        self,
+        request: product_db_pb2.GetItemFeedbackRequest,
+        context: grpc.ServicerContext,
+    ) -> product_db_pb2.GetItemFeedbackResponse:
+        result = self._execute(
+            context,
+            lambda: self.api.get_item_feedback(
+                item_category=request.item_category, item_id=request.item_id
+            ),
+        )
+        response = product_db_pb2.GetItemFeedbackResponse(
+            found=result.get("feedback") is not None
+        )
+        if result.get("feedback") is not None:
+            response.feedback.CopyFrom(
+                product_db_pb2.ItemFeedback(
+                    thumbs_up=result["feedback"]["thumbs_up"],
+                    thumbs_down=result["feedback"]["thumbs_down"],
+                )
+            )
+        return response
+
+    def CheckBuyerVoted(
+        self,
+        request: product_db_pb2.CheckBuyerVotedRequest,
+        context: grpc.ServicerContext,
+    ) -> product_db_pb2.CheckBuyerVotedResponse:
+        result = self._execute(
+            context,
+            lambda: self.api.check_buyer_voted(
+                buyer_id=request.buyer_id,
+                item_category=request.item_category,
+                item_id=request.item_id,
+            ),
+        )
+        response = product_db_pb2.CheckBuyerVotedResponse(voted=result["voted"])
+        # `vote` is optional in response and is set only when a prior vote exists.
+        if result.get("vote") is not None:
+            response.vote = result["vote"]
+        return response
+
+def run_server(host: str, port: int):
+    """Run the product database gRPC server."""
+    # Initialize database
+    engine = init_db()
+    db_session_factory = make_session_factory(engine=engine)
+
+    try:
+        # Thread pool matches the concurrent RPC model for blocking DB operations.
+        server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=64))
+        product_db_pb2_grpc.add_ProductDbServiceServicer_to_server(
+            ProductDbService(db_session_factory),
+            server,
+        )
+        server.add_insecure_port(f"{host}:{port}")
+        server.start()
+        logger.info("Product DB gRPC server listening on %s:%s", host, port)
+        server.wait_for_termination()
+    finally:
+        try:
+            # Ensure pooled DB connections are closed on shutdown.
+            engine.dispose()
+        except Exception:
+            pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Product Database gRPC Server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8002, help="Port to bind to")
+    args = parser.parse_args()
+
+    run_server(args.host, args.port)
+
+
+if __name__ == "__main__":
+    main()
