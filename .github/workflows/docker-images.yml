@@ -1,0 +1,283 @@
+name: Build and Publish Marketplace Docker Images
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+    paths:
+      - "backends/**"
+      - "clients/**"
+      - "databases/**"
+      - "common/**"
+      - "docker/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docker-images.yml"
+  workflow_dispatch:
+    inputs:
+      use_latest_tag:
+        description: "Tag as latest instead of branch name"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      image_base: ${{ steps.image-name.outputs.image_base }}
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
+      merge_matrix: ${{ steps.matrix.outputs.merge_matrix }}
+      has_changes: ${{ steps.matrix.outputs.has_changes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute Docker image base name
+        id: image-name
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          repo="${repo,,}"
+          echo "image_base=${owner}/${repo}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine build scope
+        id: scope
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=changed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect changed image scopes
+        id: changes
+        if: steps.scope.outputs.mode == 'changed'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend_buyers:
+              - 'backends/buyers/**'
+              - 'backends/common/**'
+              - 'common/**'
+              - 'docker/Dockerfile.backend-buyers'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            backend_sellers:
+              - 'backends/sellers/**'
+              - 'backends/common/**'
+              - 'common/**'
+              - 'docker/Dockerfile.backend-sellers'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            backend_financial:
+              - 'backends/financial/**'
+              - 'docker/Dockerfile.backend-financial'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            db_customer:
+              - 'databases/customer/**'
+              - 'common/**'
+              - 'docker/Dockerfile.db-customer'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            db_product:
+              - 'databases/product/**'
+              - 'common/**'
+              - 'docker/Dockerfile.db-product'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            client_buyers:
+              - 'clients/buyers/**'
+              - 'clients/common/**'
+              - 'docker/Dockerfile.client-buyers'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            client_sellers:
+              - 'clients/sellers/**'
+              - 'clients/common/**'
+              - 'docker/Dockerfile.client-sellers'
+              - 'pyproject.toml'
+              - 'uv.lock'
+
+      - name: Build matrix from scope
+        id: matrix
+        run: |
+          set -euo pipefail
+
+          mode="${{ steps.scope.outputs.mode }}"
+          build_entries=()
+          merge_entries=()
+
+          add_image() {
+            local image_id="$1"
+            local image_suffix="$2"
+            local dockerfile="$3"
+            local description="$4"
+
+            build_entries+=("{\"image_id\":\"${image_id}\",\"image_suffix\":\"${image_suffix}\",\"dockerfile\":\"${dockerfile}\",\"arch\":\"amd64\",\"platform\":\"linux/amd64\",\"runner\":\"ubuntu-24.04\"}")
+            build_entries+=("{\"image_id\":\"${image_id}\",\"image_suffix\":\"${image_suffix}\",\"dockerfile\":\"${dockerfile}\",\"arch\":\"arm64\",\"platform\":\"linux/arm64\",\"runner\":\"ubuntu-24.04-arm\"}")
+            merge_entries+=("{\"image_id\":\"${image_id}\",\"image_suffix\":\"${image_suffix}\",\"description\":\"${description}\"}")
+          }
+
+          if [[ "${mode}" == "all" || "${{ steps.changes.outputs.backend_buyers }}" == "true" ]]; then
+            add_image "backend-buyers" "-backend-buyers" "docker/Dockerfile.backend-buyers" "Marketplace buyers backend service"
+          fi
+          if [[ "${mode}" == "all" || "${{ steps.changes.outputs.backend_sellers }}" == "true" ]]; then
+            add_image "backend-sellers" "-backend-sellers" "docker/Dockerfile.backend-sellers" "Marketplace sellers backend service"
+          fi
+          if [[ "${mode}" == "all" || "${{ steps.changes.outputs.backend_financial }}" == "true" ]]; then
+            add_image "backend-financial" "-backend-financial" "docker/Dockerfile.backend-financial" "Marketplace financial SOAP service"
+          fi
+          if [[ "${mode}" == "all" || "${{ steps.changes.outputs.db_customer }}" == "true" ]]; then
+            add_image "db-customer" "-db-customer" "docker/Dockerfile.db-customer" "Marketplace customer database service"
+          fi
+          if [[ "${mode}" == "all" || "${{ steps.changes.outputs.db_product }}" == "true" ]]; then
+            add_image "db-product" "-db-product" "docker/Dockerfile.db-product" "Marketplace product database service"
+          fi
+          if [[ "${mode}" == "all" || "${{ steps.changes.outputs.client_buyers }}" == "true" ]]; then
+            add_image "client-buyers" "-client-buyers" "docker/Dockerfile.client-buyers" "Marketplace buyers CLI client"
+          fi
+          if [[ "${mode}" == "all" || "${{ steps.changes.outputs.client_sellers }}" == "true" ]]; then
+            add_image "client-sellers" "-client-sellers" "docker/Dockerfile.client-sellers" "Marketplace sellers CLI client"
+          fi
+
+          if (( ${#build_entries[@]} == 0 )); then
+            build_json='{"include":[]}'
+            merge_json='{"include":[]}'
+            has_changes='false'
+          else
+            build_json="$(printf '%s\n' "${build_entries[@]}" | jq -cs '{include: .}')"
+            merge_json="$(printf '%s\n' "${merge_entries[@]}" | jq -cs '{include: .}')"
+            has_changes='true'
+          fi
+
+          echo "build_matrix=${build_json}" >> "$GITHUB_OUTPUT"
+          echo "merge_matrix=${merge_json}" >> "$GITHUB_OUTPUT"
+          echo "has_changes=${has_changes}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.has_changes == 'true'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      actions: write
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.build_matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image digest (${{ matrix.image_id }} / ${{ matrix.arch }})
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ matrix.image_id }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image_id }}-${{ matrix.arch }}
+          provenance: false
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_base }}${{ matrix.image_suffix }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image_id }}-${{ matrix.arch }}
+          path: /tmp/digests
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.has_changes == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.merge_matrix) }}
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image_id }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_base }}${{ matrix.image_suffix }}
+          tags: |
+            type=raw,value=latest,enable=${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.use_latest_tag == true) }},priority=1000
+            type=semver,pattern={{version}}
+            type=ref,event=tag
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && inputs.use_latest_tag != true }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=${{ matrix.description }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(echo "$TAGS" | xargs -I {} echo -t {}) \
+            $(printf '${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_base }}${{ matrix.image_suffix }}@sha256:%s ' *)
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+
+      - name: Output build information
+        run: |
+          echo "Docker images built and pushed successfully"
+          echo "Image: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.image_base }}${{ matrix.image_suffix }}"
+          echo "Tags:"
+          echo '${{ steps.meta.outputs.tags }}' | sed 's/^/  - /'
+          echo "Event: ${{ github.event_name }}"

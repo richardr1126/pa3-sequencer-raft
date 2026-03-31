@@ -1,0 +1,182 @@
+services:
+  db-customer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db-customer
+    command:
+      - uv
+      - run
+      - --no-sync
+      - databases/customer/main.py
+      - --port
+      - "8001"
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; s=socket.create_connection(('127.0.0.1',8001),2); s.close()
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  db-product:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db-product
+    command:
+      - uv
+      - run
+      - --no-sync
+      - databases/product/main.py
+      - --port
+      - "8002"
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; s=socket.create_connection(('127.0.0.1',8002),2); s.close()
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  backend-financial:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend-financial
+    command:
+      - uv
+      - run
+      - --no-sync
+      - backends/financial/main.py
+      - --port
+      - "8005"
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/?wsdl', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  backend-sellers:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend-sellers
+    command:
+      - uv
+      - run
+      - --no-sync
+      - backends/sellers/main.py
+      - --port
+      - "8003"
+      - --customer-db-host
+      - db-customer
+      - --customer-db-port
+      - "8001"
+      - --product-db-host
+      - db-product
+      - --product-db-port
+      - "8002"
+    ports:
+      - "8003:8003"
+    depends_on:
+      db-customer:
+        condition: service_healthy
+      db-product:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/openapi.json', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  backend-buyers:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend-buyers
+    command:
+      - uv
+      - run
+      - --no-sync
+      - backends/buyers/main.py
+      - --port
+      - "8004"
+      - --customer-db-host
+      - db-customer
+      - --customer-db-port
+      - "8001"
+      - --product-db-host
+      - db-product
+      - --product-db-port
+      - "8002"
+      - --financial-wsdl-url
+      - http://backend-financial:8005/?wsdl
+    ports:
+      - "8004:8004"
+    depends_on:
+      db-customer:
+        condition: service_healthy
+      db-product:
+        condition: service_healthy
+      backend-financial:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/openapi.json', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  client-sellers:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client-sellers
+    command:
+      - --host
+      - backend-sellers
+      - --port
+      - "8003"
+      - --help
+    depends_on:
+      backend-sellers:
+        condition: service_healthy
+    profiles:
+      - clients
+
+  client-buyers:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client-buyers
+    command:
+      - --host
+      - backend-buyers
+      - --port
+      - "8004"
+      - --help
+    depends_on:
+      backend-buyers:
+        condition: service_healthy
+    profiles:
+      - clients

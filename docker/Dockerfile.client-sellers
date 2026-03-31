@@ -1,0 +1,18 @@
+FROM python:3.13-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
+
+COPY clients/sellers /app/clients/sellers
+COPY clients/common /app/clients/common
+
+ENTRYPOINT ["uv", "run", "--no-sync", "clients/sellers/cli.py"]
+CMD ["--help"]
