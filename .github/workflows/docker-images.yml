@@ -47,9 +47,7 @@ jobs:
         id: image-name
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
-          repo="${GITHUB_REPOSITORY#*/}"
-          repo="${repo,,}"
-          echo "image_base=${owner}/${repo}" >> "$GITHUB_OUTPUT"
+          echo "image_base=${owner}/pa3" >> "$GITHUB_OUTPUT"
 
       - name: Determine build scope
         id: scope
