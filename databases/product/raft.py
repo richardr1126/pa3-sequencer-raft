@@ -219,66 +219,34 @@ class ProductRaftNode:
 
         return result.get("value") or {}
 
-    def cluster_status(self) -> dict[str, Any]:
+    def _read_status(self) -> tuple[str, str | None, bool]:
         if not self.running:
-            return {
-                "self_addr": self.config.self_addr,
-                "leader_addr": None,
-                "has_quorum": False,
-                "is_leader": False,
-            }
-
+            return self.config.self_addr, None, False
         try:
             raw = self._sm.getStatus()
         except Exception:
-            return {
-                "self_addr": self.config.self_addr,
-                "leader_addr": None,
-                "has_quorum": False,
-                "is_leader": False,
-            }
+            return self.config.self_addr, None, False
 
         self_node = raw.get("self")
         leader_node = raw.get("leader")
         self_addr = self.config.self_addr if self_node is None else self_node.id
         leader_addr = None if leader_node is None else leader_node.id
         has_quorum = bool(raw.get("has_quorum"))
-        return {
-            "self_addr": self_addr,
-            "leader_addr": leader_addr,
-            "has_quorum": has_quorum,
-            "is_leader": leader_addr is not None and leader_addr == self_addr,
-        }
-
-    def is_leader(self) -> bool:
-        return bool(self.cluster_status().get("is_leader"))
-
-    def leader_addr(self) -> str | None:
-        value = self.cluster_status().get("leader_addr")
-        return str(value) if value else None
-
-    def leader_grpc_target(self) -> str | None:
-        leader_addr = self.leader_addr()
-        if not leader_addr:
-            return None
-        return derive_grpc_target_from_raft_addr(
-            leader_addr,
-            port_offset=self.config.grpc_port_offset,
-        )
+        return self_addr, leader_addr, has_quorum
 
     def get_leader_grpc_target_or_error(self, *, already_forwarded: bool = False) -> str | None:
         if not self.is_ready():
             raise RaftError("RAFT_NOT_READY", "Raft node is not ready")
 
-        status = self.cluster_status()
-        if not status.get("has_quorum"):
+        self_addr, leader_addr, has_quorum = self._read_status()
+        if not has_quorum:
             raise RaftError(
                 "RAFT_NO_QUORUM",
                 "Raft cluster has no quorum for leader-consistent reads",
                 grpc.StatusCode.UNAVAILABLE,
             )
 
-        if status.get("is_leader"):
+        if leader_addr is not None and leader_addr == self_addr:
             return None
 
         if already_forwarded:
@@ -288,7 +256,12 @@ class ProductRaftNode:
                 grpc.StatusCode.UNAVAILABLE,
             )
 
-        target = self.leader_grpc_target()
+        target = None
+        if leader_addr:
+            target = derive_grpc_target_from_raft_addr(
+                leader_addr,
+                port_offset=self.config.grpc_port_offset,
+            )
         if target:
             return target
 

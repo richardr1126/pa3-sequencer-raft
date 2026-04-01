@@ -117,6 +117,7 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     def CreateItem(
         self, request: product_db_pb2.CreateItemRequest, context: grpc.ServicerContext
     ) -> product_db_pb2.CreateItemResponse:
+        # Retry collision loop
         for _ in range(16):
             item_id = secrets.randbelow((1 << 63) - 1) + 1
             payload = {
