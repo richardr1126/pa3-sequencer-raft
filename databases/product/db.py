@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import re
 
 from sqlalchemy import (
     DateTime,
@@ -30,8 +31,34 @@ from sqlalchemy.orm import (
 )
 
 
-DB_PATH = Path(__file__).resolve().with_name("product.sqlite3")
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+DEFAULT_DB_PATH = Path(__file__).resolve().with_name("product.sqlite3")
+
+
+def raft_node_storage_suffix(raft_self_addr: str) -> str:
+    """Build a stable, filesystem-safe suffix from a raft node address."""
+    addr = raft_self_addr.strip()
+    if ":" in addr:
+        port = addr.rsplit(":", 1)[1]
+        if port.isdigit():
+            return port
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "_", addr) or "default"
+
+
+def default_persistence_root() -> str:
+    return ".data"
+
+
+def persistence_paths_for_raft_node(
+    persistence_root: str | Path,
+    raft_self_addr: str,
+) -> tuple[Path, Path, Path]:
+    suffix = raft_node_storage_suffix(raft_self_addr)
+    root = Path(persistence_root)
+    return (
+        root / f"{suffix}.product.sqlite3",
+        root / f"{suffix}.raft_dump",
+        root / f"{suffix}.raft_journal",
+    )
 
 
 def utcnow() -> datetime:
@@ -146,9 +173,11 @@ class ItemFeedbackVote(Base):
     item: Mapped[Item] = relationship(back_populates="feedback_votes")
 
 
-def make_engine(*, echo: bool = False) -> Engine:
+def make_engine(*, echo: bool = False, db_path: str | Path | None = None) -> Engine:
+    db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+    db_file.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
-        DATABASE_URL,
+        f"sqlite:///{db_file}",
         echo=echo,
         connect_args={"timeout": 600},
         pool_size=20,  # Base pool size
@@ -168,14 +197,22 @@ def make_engine(*, echo: bool = False) -> Engine:
     return engine
 
 
-def make_session_factory(*, engine: Engine | None = None):
-    engine = engine or make_engine()
+def make_session_factory(
+    *,
+    engine: Engine | None = None,
+    db_path: str | Path | None = None,
+):
+    engine = engine or make_engine(db_path=db_path)
     return sessionmaker(
         bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
     )
 
 
-def init_db(*, engine: Engine | None = None) -> Engine:
-    engine = engine or make_engine()
+def init_db(
+    *,
+    engine: Engine | None = None,
+    db_path: str | Path | None = None,
+) -> Engine:
+    engine = engine or make_engine(db_path=db_path)
     Base.metadata.create_all(engine)
     return engine

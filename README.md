@@ -1,4 +1,4 @@
-# Distributed Systems PA2: Richard Roberson
+# Distributed Systems PA3: Richard Roberson
 
 This project implements a 3-tier architecture for an online marketplace platform.  With separate backend services for buyers and sellers, custom database services using sqlite3 through sqlalchemy ORM, along with client-side command line interfaces (CLIs) for the "frontend".
 
@@ -19,16 +19,24 @@ This project implements a 3-tier architecture for an online marketplace platform
 - Backend services remain stateless; session/cart/auth state is persisted in DB services.
 - Backend services communicate to DB services over gRPC.
 - Session ID is a server-generated random token (32-byte hex string)
+
 #### Database services
 - DB services use gRPC with a thread pool to handle multiple backend calls.
-- DB services using sqlite3 through sqlalchemy ORM, limited to 1 writer but multiple concurrent readers.
+- Both DB services using sqlite3 through sqlalchemy ORM, limited to 1 writer but multiple concurrent readers.
 - SQLite uses a locking mechanism to serialize writes, so threads may block waiting for the write lock for up to 10 mins (600 seconds).
+
+##### Customer DB assumptions
+- Session cart and saved cart are separate; Cart.SaveCart overwrites saved cart; Cart.LoadSavedCart overwrites session cart; setting quantity <= 0 removes the cart item.
+- Sessions are cleaned up by utilizing a "last touched" timestamp that is updated on each request; if a session is inactive for 5+ mins, it is expired and deleted from the DB. Backend services will "touch" sessions on each request to prevent expiration during active use.
+
+##### Product DB assumptions
+- Replicated through PySyncObj's Raft implementation for high availability on 3 or more nodes.
+- Backend buyers and sellers product db client can connect to any node in the product db Raft cluster through a failover list mechanism.
+- For product DB consistency, all reads received on any node are also forwarded to the Raft leader, so all operations are linearized through the leader's log.
 - Item IDs are composite keys of (int item_category, int item_id) where item category is the high-level category chosen by the seller and item_id is a unique identifier within that category (63-bit random integer w/ collision retries).
 - **Search semantics:** category match is exact; if keywords are provided, items are ranked by keyword match count; only non-deleted items with quantity > 0 are returned.
 - Items are tombstoned (set deleted_at) and hidden from normal Get/Search; cart display will include deleted items that are "no longer availble".
 - Item feedback votes update both the item's feedback counters and the seller's feedback counters.
-- Session cart and saved cart are separate; Cart.SaveCart overwrites saved cart; Cart.LoadSavedCart overwrites session cart; setting quantity <= 0 removes the cart item.
-- Sessions are cleaned up by utilizing a "last touched" timestamp that is updated on each request; if a session is inactive for 5+ mins, it is expired and deleted from the DB. Backend services will "touch" sessions on each request to prevent expiration during active use.
 - Up to 5 keywords (limited to 8 characters each)
 
 ## Current State

@@ -360,11 +360,49 @@ class ProductDbClient:
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
-        self._channel = grpc.insecure_channel(f"{host}:{port}")
-        self._stub = product_db_pb2_grpc.ProductDbServiceStub(self._channel)
+        self._channels: list[grpc.Channel] = []
+        self._stubs: list[product_db_pb2_grpc.ProductDbServiceStub] = []
+
+        raw_targets = [token.strip() for token in host.split(",") if token.strip()]
+        if not raw_targets:
+            raw_targets = [host.strip()] if host.strip() else ["localhost"]
+
+        for target in raw_targets:
+            full_target = target
+            # Allow explicit host:port entries, otherwise use the supplied port arg.
+            if ":" not in target or not target.rsplit(":", 1)[1].isdigit():
+                full_target = f"{target}:{port}"
+            channel = grpc.insecure_channel(full_target)
+            stub = product_db_pb2_grpc.ProductDbServiceStub(channel)
+            self._channels.append(channel)
+            self._stubs.append(stub)
 
     def close(self) -> None:
-        self._channel.close()
+        for channel in self._channels:
+            channel.close()
+
+    @staticmethod
+    def _is_retryable(exc: grpc.RpcError) -> bool:
+        return exc.code() in {
+            grpc.StatusCode.UNAVAILABLE,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+        }
+
+    def _rpc(self, method_name: str, request):
+        last_retryable_error: grpc.RpcError | None = None
+        for stub in self._stubs:
+            method = getattr(stub, method_name)
+            try:
+                return method(request)
+            except grpc.RpcError as exc:
+                if self._is_retryable(exc):
+                    last_retryable_error = exc
+                    continue
+                raise
+
+        if last_retryable_error is not None:
+            raise last_retryable_error
+        raise RuntimeError("No product DB endpoints configured")
 
     def create_item(
         self,
@@ -377,7 +415,8 @@ class ProductDbClient:
         quantity: int,
         seller_id: int,
     ) -> dict:
-        response = self._stub.CreateItem(
+        response = self._rpc(
+            "CreateItem",
             product_db_pb2.CreateItemRequest(
                 item_name=item_name,
                 item_category=item_category,
@@ -386,17 +425,18 @@ class ProductDbClient:
                 sale_price=sale_price,
                 quantity=quantity,
                 seller_id=seller_id,
-            )
+            ),
         )
         return _item_to_dict(response.item)
 
     def get_item(self, *, item_category: int, item_id: int, include_deleted: bool = False) -> dict:
-        response = self._stub.GetItem(
+        response = self._rpc(
+            "GetItem",
             product_db_pb2.GetItemRequest(
                 item_category=item_category,
                 item_id=item_id,
                 include_deleted=include_deleted,
-            )
+            ),
         )
         item = _item_to_dict(response.item) if response.found and response.HasField("item") else None
         return {"item": item}
@@ -417,7 +457,7 @@ class ProductDbClient:
         if seller_id is not None:
             request.seller_id = seller_id
 
-        response = self._stub.UpdateItemPrice(request)
+        response = self._rpc("UpdateItemPrice", request)
         return {"sale_price": response.sale_price}
 
     def update_item_quantity(
@@ -442,7 +482,7 @@ class ProductDbClient:
         if seller_id is not None:
             request.seller_id = seller_id
 
-        response = self._stub.UpdateItemQuantity(request)
+        response = self._rpc("UpdateItemQuantity", request)
         return {"quantity": response.quantity}
 
     def delete_item(
@@ -458,24 +498,26 @@ class ProductDbClient:
         )
         if seller_id is not None:
             request.seller_id = seller_id
-        response = self._stub.DeleteItem(request)
+        response = self._rpc("DeleteItem", request)
         return {"deleted": response.deleted}
 
     def list_items_by_seller(self, *, seller_id: int, include_deleted: bool = False) -> dict:
-        response = self._stub.ListItemsBySeller(
+        response = self._rpc(
+            "ListItemsBySeller",
             product_db_pb2.ListItemsBySellerRequest(
                 seller_id=seller_id,
                 include_deleted=include_deleted,
-            )
+            ),
         )
         return {"items": [_item_to_dict(item) for item in response.items]}
 
     def search_items(self, *, item_category: int, keywords: list[str]) -> dict:
-        response = self._stub.SearchItems(
+        response = self._rpc(
+            "SearchItems",
             product_db_pb2.SearchItemsRequest(
                 item_category=item_category,
                 keywords=keywords,
-            )
+            ),
         )
 
         items = []
@@ -494,13 +536,14 @@ class ProductDbClient:
         item_id: int,
         vote: str,
     ) -> dict:
-        response = self._stub.AddFeedbackVote(
+        response = self._rpc(
+            "AddFeedbackVote",
             product_db_pb2.AddFeedbackVoteRequest(
                 buyer_id=buyer_id,
                 item_category=item_category,
                 item_id=item_id,
                 vote=vote,
-            )
+            ),
         )
         return {
             "thumbs_up": response.thumbs_up,
@@ -509,11 +552,12 @@ class ProductDbClient:
         }
 
     def get_item_feedback(self, *, item_category: int, item_id: int) -> dict:
-        response = self._stub.GetItemFeedback(
+        response = self._rpc(
+            "GetItemFeedback",
             product_db_pb2.GetItemFeedbackRequest(
                 item_category=item_category,
                 item_id=item_id,
-            )
+            ),
         )
 
         feedback = None
@@ -525,12 +569,13 @@ class ProductDbClient:
         return {"feedback": feedback}
 
     def check_buyer_voted(self, *, buyer_id: int, item_category: int, item_id: int) -> dict:
-        response = self._stub.CheckBuyerVoted(
+        response = self._rpc(
+            "CheckBuyerVoted",
             product_db_pb2.CheckBuyerVotedRequest(
                 buyer_id=buyer_id,
                 item_category=item_category,
                 item_id=item_id,
-            )
+            ),
         )
 
         # `vote` is optional: it is present only when `voted` is true.

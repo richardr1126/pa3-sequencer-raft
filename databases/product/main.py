@@ -8,6 +8,7 @@
 import argparse
 import concurrent.futures
 import logging
+import secrets
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,12 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from common.grpc_gen import product_db_pb2, product_db_pb2_grpc
 from databases.product.api import ProductDomainApi
 from databases.product.db import init_db, make_session_factory
+from databases.product.raft import (
+    ProductRaftNode,
+    ProductReadForwarder,
+    RaftError,
+    build_raft_config_from_env,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,8 +41,13 @@ logger = logging.getLogger(__name__)
 class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     """Product database gRPC servicer."""
 
-    def __init__(self, db_session_factory):
-        self.api = ProductDomainApi(db_session_factory)
+    def __init__(self, api: ProductDomainApi, raft_node: ProductRaftNode):
+        self.api = api
+        self.raft = raft_node
+        self.forwarder = ProductReadForwarder(raft_node)
+
+    def close(self) -> None:
+        self.forwarder.close()
 
     @staticmethod
     def _timestamp_from_iso(value: str | None) -> Timestamp | None:
@@ -69,7 +81,16 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         return msg
 
     @staticmethod
+    def _is_item_id_collision(exc: RaftError) -> bool:
+        return (
+            exc.grpc_status == grpc.StatusCode.INVALID_ARGUMENT
+            and exc.message.startswith("Item ID collision:")
+        )
+
+    @staticmethod
     def _abort_from_exception(context: grpc.ServicerContext, exc: Exception) -> None:
+        if isinstance(exc, RaftError):
+            context.abort(exc.grpc_status, exc.message)
         if isinstance(exc, ValueError):
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         if isinstance(exc, IntegrityError):
@@ -86,26 +107,58 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
             self._abort_from_exception(context, exc)
             raise
 
+    def _apply_write(
+        self,
+        context: grpc.ServicerContext,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._execute(context, lambda: self.raft.apply(payload))
+
     def CreateItem(
         self, request: product_db_pb2.CreateItemRequest, context: grpc.ServicerContext
     ) -> product_db_pb2.CreateItemResponse:
-        result = self._execute(
-            context,
-            lambda: self.api.create_item(
-                item_name=request.item_name,
-                item_category=request.item_category,
-                keywords=list(request.keywords),
-                condition=request.condition,
-                sale_price=request.sale_price,
-                quantity=request.quantity,
-                seller_id=request.seller_id,
-            ),
+        for _ in range(16):
+            item_id = secrets.randbelow((1 << 63) - 1) + 1
+            payload = {
+                "type": "CreateItem",
+                "item_id": item_id,
+                "item_name": request.item_name,
+                "item_category": request.item_category,
+                "keywords": list(request.keywords),
+                "condition": request.condition,
+                "sale_price": request.sale_price,
+                "quantity": request.quantity,
+                "seller_id": request.seller_id,
+            }
+
+            try:
+                result = self.raft.apply(payload)
+            except RaftError as exc:
+                if self._is_item_id_collision(exc):
+                    continue
+                self._abort_from_exception(context, exc)
+                raise
+            except Exception as exc:
+                self._abort_from_exception(context, exc)
+                raise
+
+            return product_db_pb2.CreateItemResponse(item=self._item_message(result))
+
+        context.abort(
+            grpc.StatusCode.UNAVAILABLE,
+            "Failed to allocate unique item id after repeated collisions",
         )
-        return product_db_pb2.CreateItemResponse(item=self._item_message(result))
 
     def GetItem(
         self, request: product_db_pb2.GetItemRequest, context: grpc.ServicerContext
     ) -> product_db_pb2.GetItemResponse:
+        forwarded = self._execute(
+            context,
+            lambda: self.forwarder.forward_if_needed(context, "GetItem", request),
+        )
+        if forwarded is not None:
+            return forwarded
+
         result = self._execute(
             context,
             lambda: self.api.get_item(
@@ -126,14 +179,15 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     ) -> product_db_pb2.UpdateItemPriceResponse:
         # `seller_id` is optional: absent means no ownership check at this layer.
         seller_id = request.seller_id if request.HasField("seller_id") else None
-        result = self._execute(
+        result = self._apply_write(
             context,
-            lambda: self.api.update_item_price(
-                item_category=request.item_category,
-                item_id=request.item_id,
-                sale_price=request.sale_price,
-                seller_id=seller_id,
-            ),
+            {
+                "type": "UpdateItemPrice",
+                "item_category": request.item_category,
+                "item_id": request.item_id,
+                "sale_price": request.sale_price,
+                "seller_id": seller_id,
+            },
         )
         return product_db_pb2.UpdateItemPriceResponse(sale_price=result["sale_price"])
 
@@ -153,15 +207,16 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
 
         # `seller_id` is optional: absent means no ownership check at this layer.
         seller_id = request.seller_id if request.HasField("seller_id") else None
-        result = self._execute(
+        result = self._apply_write(
             context,
-            lambda: self.api.update_item_quantity(
-                item_category=request.item_category,
-                item_id=request.item_id,
-                quantity=quantity,
-                quantity_delta=quantity_delta,
-                seller_id=seller_id,
-            ),
+            {
+                "type": "UpdateItemQuantity",
+                "item_category": request.item_category,
+                "item_id": request.item_id,
+                "quantity": quantity,
+                "quantity_delta": quantity_delta,
+                "seller_id": seller_id,
+            },
         )
         return product_db_pb2.UpdateItemQuantityResponse(quantity=result["quantity"])
 
@@ -170,13 +225,14 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     ) -> product_db_pb2.DeleteItemResponse:
         # `seller_id` is optional: absent means no ownership check at this layer.
         seller_id = request.seller_id if request.HasField("seller_id") else None
-        result = self._execute(
+        result = self._apply_write(
             context,
-            lambda: self.api.delete_item(
-                item_category=request.item_category,
-                item_id=request.item_id,
-                seller_id=seller_id,
-            ),
+            {
+                "type": "DeleteItem",
+                "item_category": request.item_category,
+                "item_id": request.item_id,
+                "seller_id": seller_id,
+            },
         )
         return product_db_pb2.DeleteItemResponse(deleted=result["deleted"])
 
@@ -185,6 +241,13 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.ListItemsBySellerRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.ListItemsBySellerResponse:
+        forwarded = self._execute(
+            context,
+            lambda: self.forwarder.forward_if_needed(context, "ListItemsBySeller", request),
+        )
+        if forwarded is not None:
+            return forwarded
+
         result = self._execute(
             context,
             lambda: self.api.list_items_by_seller(
@@ -199,6 +262,13 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     def SearchItems(
         self, request: product_db_pb2.SearchItemsRequest, context: grpc.ServicerContext
     ) -> product_db_pb2.SearchItemsResponse:
+        forwarded = self._execute(
+            context,
+            lambda: self.forwarder.forward_if_needed(context, "SearchItems", request),
+        )
+        if forwarded is not None:
+            return forwarded
+
         result = self._execute(
             context,
             lambda: self.api.search_items(
@@ -221,14 +291,15 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.AddFeedbackVoteRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.AddFeedbackVoteResponse:
-        result = self._execute(
+        result = self._apply_write(
             context,
-            lambda: self.api.add_feedback_vote(
-                buyer_id=request.buyer_id,
-                item_category=request.item_category,
-                item_id=request.item_id,
-                vote=request.vote,
-            ),
+            {
+                "type": "AddFeedbackVote",
+                "buyer_id": request.buyer_id,
+                "item_category": request.item_category,
+                "item_id": request.item_id,
+                "vote": request.vote,
+            },
         )
         return product_db_pb2.AddFeedbackVoteResponse(
             thumbs_up=result["thumbs_up"],
@@ -241,6 +312,13 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.GetItemFeedbackRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.GetItemFeedbackResponse:
+        forwarded = self._execute(
+            context,
+            lambda: self.forwarder.forward_if_needed(context, "GetItemFeedback", request),
+        )
+        if forwarded is not None:
+            return forwarded
+
         result = self._execute(
             context,
             lambda: self.api.get_item_feedback(
@@ -264,6 +342,13 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.CheckBuyerVotedRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.CheckBuyerVotedResponse:
+        forwarded = self._execute(
+            context,
+            lambda: self.forwarder.forward_if_needed(context, "CheckBuyerVoted", request),
+        )
+        if forwarded is not None:
+            return forwarded
+
         result = self._execute(
             context,
             lambda: self.api.check_buyer_voted(
@@ -278,17 +363,32 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
             response.vote = result["vote"]
         return response
 
+
 def run_server(host: str, port: int):
     """Run the product database gRPC server."""
+
+    raft_config, sqlite_path = build_raft_config_from_env()
+
+    logger.info("Product DB storage path: %s", sqlite_path)
+    logger.info("Product DB raft self addr: %s", raft_config.self_addr)
+    logger.info("Product DB raft partner addrs: %s", raft_config.partner_addrs)
+
     # Initialize database
-    engine = init_db()
+    engine = init_db(db_path=sqlite_path)
     db_session_factory = make_session_factory(engine=engine)
+    domain_api = ProductDomainApi(db_session_factory)
+    raft = ProductRaftNode(
+        config=raft_config,
+        apply_fn=domain_api.apply_raft_command,
+    )
+
+    service = ProductDbService(domain_api, raft)
 
     try:
         # Thread pool matches the concurrent RPC model for blocking DB operations.
         server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=64))
         product_db_pb2_grpc.add_ProductDbServiceServicer_to_server(
-            ProductDbService(db_session_factory),
+            service,
             server,
         )
         server.add_insecure_port(f"{host}:{port}")
@@ -296,6 +396,14 @@ def run_server(host: str, port: int):
         logger.info("Product DB gRPC server listening on %s:%s", host, port)
         server.wait_for_termination()
     finally:
+        try:
+            service.close()
+        except Exception:
+            pass
+        try:
+            raft.stop()
+        except Exception:
+            pass
         try:
             # Ensure pooled DB connections are closed on shutdown.
             engine.dispose()

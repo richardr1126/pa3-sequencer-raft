@@ -14,6 +14,56 @@ class ProductDomainApi:
     def __init__(self, db_session_factory):
         self.db_session_factory = db_session_factory
 
+    def apply_raft_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Apply a raft-committed write command payload."""
+        command_type = payload.get("type")
+
+        if command_type == "CreateItem":
+            return self.create_item(
+                item_id=payload["item_id"],
+                item_name=payload["item_name"],
+                item_category=payload["item_category"],
+                keywords=list(payload.get("keywords") or []),
+                condition=payload["condition"],
+                sale_price=payload["sale_price"],
+                quantity=payload["quantity"],
+                seller_id=payload["seller_id"],
+            )
+
+        if command_type == "UpdateItemPrice":
+            return self.update_item_price(
+                item_category=payload["item_category"],
+                item_id=payload["item_id"],
+                sale_price=payload["sale_price"],
+                seller_id=payload.get("seller_id"),
+            )
+
+        if command_type == "UpdateItemQuantity":
+            return self.update_item_quantity(
+                item_category=payload["item_category"],
+                item_id=payload["item_id"],
+                quantity=payload.get("quantity"),
+                quantity_delta=payload.get("quantity_delta"),
+                seller_id=payload.get("seller_id"),
+            )
+
+        if command_type == "DeleteItem":
+            return self.delete_item(
+                item_category=payload["item_category"],
+                item_id=payload["item_id"],
+                seller_id=payload.get("seller_id"),
+            )
+
+        if command_type == "AddFeedbackVote":
+            return self.add_feedback_vote(
+                buyer_id=payload["buyer_id"],
+                item_category=payload["item_category"],
+                item_id=payload["item_id"],
+                vote=payload["vote"],
+            )
+
+        raise ValueError(f"Unknown raft write command type: {command_type}")
+
     # -- Item related ProductDB API --
 
     def create_item(
@@ -26,6 +76,7 @@ class ProductDomainApi:
         sale_price: float,
         quantity: int,
         seller_id: int,
+        item_id: int | None = None,
     ) -> dict[str, Any]:
         """Create a new item for sale."""
         import secrets
@@ -55,10 +106,12 @@ class ProductDomainApi:
 
         with self.db_session_factory() as db:
             while True:
-                item_id = secrets.randbelow((1 << 63) - 1) + 1
+                resolved_item_id = item_id
+                if resolved_item_id is None:
+                    resolved_item_id = secrets.randbelow((1 << 63) - 1) + 1
 
                 item = Item(
-                    item_id=item_id,
+                    item_id=resolved_item_id,
                     item_category=item_category,
                     item_name=item_name,
                     condition=condition,
@@ -74,7 +127,7 @@ class ProductDomainApi:
                     if kw:
                         keyword = ItemKeyword(
                             item_category=item_category,
-                            item_id=item_id,
+                            item_id=resolved_item_id,
                             keyword=kw[:8],
                         )
                         db.add(keyword)
@@ -83,8 +136,10 @@ class ProductDomainApi:
                     db.commit()
                     break
                 except IntegrityError:
-                    # Random item IDs can collide; retry with a new ID.
                     db.rollback()
+                    if item_id is not None:
+                        raise ValueError(f"Item ID collision: {resolved_item_id}") from None
+                    # Random item IDs can collide; retry with a new ID.
                     continue
 
             return {

@@ -23,25 +23,97 @@ services:
       retries: 20
       start_period: 15s
 
-  db-product:
+  db-product-1:
     build:
       context: .
       dockerfile: docker/Dockerfile.db-product
+    environment:
+      RAFT_SELF_ADDR: db-product-1:11001
+      RAFT_PARTNER_ADDRS: db-product-2:11002,db-product-3:11003
+      RAFT_GRPC_PORT_OFFSET: "300"
+      RAFT_COMMAND_TIMEOUT_SEC: "3.0"
+      PERSISTENCE_DIR: /app/.data
     command:
       - uv
       - run
       - --no-sync
       - databases/product/main.py
       - --port
-      - "8002"
+      - "11301"
     ports:
-      - "8002:8002"
+      - "11301:11301"
+    volumes:
+      - db-product-1-data:/app/.data
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - import socket; s=socket.create_connection(('127.0.0.1',8002),2); s.close()
+        - import socket; s=socket.create_connection(('127.0.0.1',11301),2); s.close()
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  db-product-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db-product
+    environment:
+      RAFT_SELF_ADDR: db-product-2:11002
+      RAFT_PARTNER_ADDRS: db-product-1:11001,db-product-3:11003
+      RAFT_GRPC_PORT_OFFSET: "300"
+      RAFT_COMMAND_TIMEOUT_SEC: "3.0"
+      PERSISTENCE_DIR: /app/.data
+    command:
+      - uv
+      - run
+      - --no-sync
+      - databases/product/main.py
+      - --port
+      - "11302"
+    ports:
+      - "11302:11302"
+    volumes:
+      - db-product-2-data:/app/.data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; s=socket.create_connection(('127.0.0.1',11302),2); s.close()
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  db-product-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db-product
+    environment:
+      RAFT_SELF_ADDR: db-product-3:11003
+      RAFT_PARTNER_ADDRS: db-product-1:11001,db-product-2:11002
+      RAFT_GRPC_PORT_OFFSET: "300"
+      RAFT_COMMAND_TIMEOUT_SEC: "3.0"
+      PERSISTENCE_DIR: /app/.data
+    command:
+      - uv
+      - run
+      - --no-sync
+      - databases/product/main.py
+      - --port
+      - "11303"
+    ports:
+      - "11303:11303"
+    volumes:
+      - db-product-3-data:/app/.data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import socket; s=socket.create_connection(('127.0.0.1',11303),2); s.close()
       interval: 30s
       timeout: 5s
       retries: 20
@@ -87,15 +159,19 @@ services:
       - --customer-db-port
       - "8001"
       - --product-db-host
-      - db-product
+      - db-product-1:11301,db-product-2:11302,db-product-3:11303
       - --product-db-port
-      - "8002"
+      - "11301"
     ports:
       - "8003:8003"
     depends_on:
       db-customer:
         condition: service_healthy
-      db-product:
+      db-product-1:
+        condition: service_healthy
+      db-product-2:
+        condition: service_healthy
+      db-product-3:
         condition: service_healthy
     healthcheck:
       test:
@@ -124,9 +200,9 @@ services:
       - --customer-db-port
       - "8001"
       - --product-db-host
-      - db-product
+      - db-product-1:11301,db-product-2:11302,db-product-3:11303
       - --product-db-port
-      - "8002"
+      - "11301"
       - --financial-wsdl-url
       - http://backend-financial:8005/?wsdl
     ports:
@@ -134,7 +210,11 @@ services:
     depends_on:
       db-customer:
         condition: service_healthy
-      db-product:
+      db-product-1:
+        condition: service_healthy
+      db-product-2:
+        condition: service_healthy
+      db-product-3:
         condition: service_healthy
       backend-financial:
         condition: service_healthy
@@ -180,3 +260,8 @@ services:
         condition: service_healthy
     profiles:
       - clients
+
+volumes:
+  db-product-1-data:
+  db-product-2-data:
+  db-product-3-data:
