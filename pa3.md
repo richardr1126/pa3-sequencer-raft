@@ -1,7 +1,6 @@
 # CSCI/ECEN 5673: Distributed Systems Spring 2026
 
 # Programming Assignment Three
-Due 11:59PM, Monday, March 30, 2026
 
 Goal: The goal of this programming assignment is to extend the online marketplace system you developed in Programming Assignment One and Two as follows:
 

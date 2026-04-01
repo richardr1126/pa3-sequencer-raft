@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -30,7 +31,13 @@ from sqlalchemy.orm import (
 )
 
 
-DB_PATH = Path(__file__).resolve().with_name("customer.sqlite3")
+DB_PATH = Path(
+    os.getenv(
+        "CUSTOMER_DB_PATH",
+        str(Path(__file__).resolve().with_name("customer.sqlite3")),
+    )
+).resolve()
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 

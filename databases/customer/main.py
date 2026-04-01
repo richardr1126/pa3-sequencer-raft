@@ -9,6 +9,7 @@
 import argparse
 import concurrent.futures
 import logging
+import secrets
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,10 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from common.grpc_gen import customer_db_pb2, customer_db_pb2_grpc
 from databases.customer.api import CustomerDomainApi
 from databases.customer.db import init_db, make_session_factory
+from databases.customer.sequencer import (
+    CustomerSequencerEngine,
+    CustomerSequencerConfig,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,8 +39,14 @@ logger = logging.getLogger(__name__)
 class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     """Customer database gRPC servicer."""
 
-    def __init__(self, db_session_factory):
-        self.api = CustomerDomainApi(db_session_factory)
+    def __init__(
+        self,
+        api: CustomerDomainApi,
+        *,
+        sequencer_engine: CustomerSequencerEngine | None = None,
+    ):
+        self.api = api
+        self.sequencer_engine = sequencer_engine
 
     @staticmethod
     def _timestamp_from_iso(value: str | None) -> Timestamp | None:
@@ -106,12 +117,17 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
             self._abort_from_exception(context, exc)
             raise
 
+    def _call_api(self, method: str, **kwargs) -> Any:
+        if self.sequencer_engine is None:
+            return getattr(self.api, method)(**kwargs)
+        return self.sequencer_engine.submit(method, kwargs)
+
     def CreateBuyer(
         self, request: customer_db_pb2.CreateBuyerRequest, context: grpc.ServicerContext
     ) -> customer_db_pb2.CreateBuyerResponse:
         result = self._execute(
             context,
-            lambda: self.api.create_buyer(
+            lambda: self._call_api("create_buyer",
                 buyer_name=request.buyer_name,
                 login_name=request.login_name,
                 password=request.password,
@@ -126,7 +142,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.AuthenticateBuyerResponse:
         result = self._execute(
             context,
-            lambda: self.api.authenticate_buyer(
+            lambda: self._call_api("authenticate_buyer",
                 login_name=request.login_name, password=request.password
             ),
         )
@@ -141,7 +157,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     def GetBuyer(
         self, request: customer_db_pb2.GetBuyerRequest, context: grpc.ServicerContext
     ) -> customer_db_pb2.GetBuyerResponse:
-        result = self._execute(context, lambda: self.api.get_buyer(buyer_id=request.buyer_id))
+        result = self._execute(context, lambda: self._call_api("get_buyer", buyer_id=request.buyer_id))
         response = customer_db_pb2.GetBuyerResponse(found=result.get("buyer") is not None)
         if result.get("buyer") is not None:
             response.buyer.CopyFrom(self._buyer_message(result["buyer"]))
@@ -156,7 +172,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         amount = request.amount if request.HasField("amount") else 1
         result = self._execute(
             context,
-            lambda: self.api.increment_buyer_purchases(
+            lambda: self._call_api("increment_buyer_purchases",
                 buyer_id=request.buyer_id, amount=amount
             ),
         )
@@ -169,7 +185,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.CreateSellerResponse:
         result = self._execute(
             context,
-            lambda: self.api.create_seller(
+            lambda: self._call_api("create_seller",
                 seller_name=request.seller_name,
                 login_name=request.login_name,
                 password=request.password,
@@ -184,7 +200,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.AuthenticateSellerResponse:
         result = self._execute(
             context,
-            lambda: self.api.authenticate_seller(
+            lambda: self._call_api("authenticate_seller",
                 login_name=request.login_name, password=request.password
             ),
         )
@@ -200,7 +216,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         self, request: customer_db_pb2.GetSellerRequest, context: grpc.ServicerContext
     ) -> customer_db_pb2.GetSellerResponse:
         result = self._execute(
-            context, lambda: self.api.get_seller(seller_id=request.seller_id)
+            context, lambda: self._call_api("get_seller", seller_id=request.seller_id)
         )
         response = customer_db_pb2.GetSellerResponse(found=result.get("seller") is not None)
         if result.get("seller") is not None:
@@ -214,7 +230,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.UpdateSellerFeedbackResponse:
         result = self._execute(
             context,
-            lambda: self.api.update_seller_feedback(
+            lambda: self._call_api("update_seller_feedback",
                 seller_id=request.seller_id,
                 thumbs_up_delta=request.thumbs_up_delta,
                 thumbs_down_delta=request.thumbs_down_delta,
@@ -234,7 +250,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         amount = request.amount if request.HasField("amount") else 1
         result = self._execute(
             context,
-            lambda: self.api.increment_seller_items_sold(
+            lambda: self._call_api("increment_seller_items_sold",
                 seller_id=request.seller_id, amount=amount
             ),
         )
@@ -247,9 +263,16 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         request: customer_db_pb2.CreateBuyerSessionRequest,
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.CreateBuyerSessionResponse:
+        now_iso = datetime.utcnow().isoformat()
+        session_id = secrets.token_hex(32)
         result = self._execute(
             context,
-            lambda: self.api.create_buyer_session(buyer_id=request.buyer_id),
+            lambda: self._call_api(
+                "create_buyer_session",
+                buyer_id=request.buyer_id,
+                session_id=session_id,
+                now_iso=now_iso,
+            ),
         )
         return customer_db_pb2.CreateBuyerSessionResponse(session_id=result["session_id"])
 
@@ -258,9 +281,14 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         request: customer_db_pb2.ValidateBuyerSessionRequest,
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.ValidateBuyerSessionResponse:
+        now_iso = datetime.utcnow().isoformat()
         result = self._execute(
             context,
-            lambda: self.api.validate_buyer_session(session_id=request.session_id),
+            lambda: self._call_api(
+                "validate_buyer_session",
+                session_id=request.session_id,
+                now_iso=now_iso,
+            ),
         )
         response = customer_db_pb2.ValidateBuyerSessionResponse(
             valid=result["valid"],
@@ -281,7 +309,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.DeleteBuyerSessionResponse:
         result = self._execute(
             context,
-            lambda: self.api.delete_buyer_session(session_id=request.session_id),
+            lambda: self._call_api("delete_buyer_session", session_id=request.session_id),
         )
         return customer_db_pb2.DeleteBuyerSessionResponse(deleted=result["deleted"])
 
@@ -290,9 +318,14 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         request: customer_db_pb2.TouchBuyerSessionRequest,
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.TouchBuyerSessionResponse:
+        now_iso = datetime.utcnow().isoformat()
         result = self._execute(
             context,
-            lambda: self.api.touch_buyer_session(session_id=request.session_id),
+            lambda: self._call_api(
+                "touch_buyer_session",
+                session_id=request.session_id,
+                now_iso=now_iso,
+            ),
         )
         return customer_db_pb2.TouchBuyerSessionResponse(touched=result["touched"])
 
@@ -302,7 +335,11 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.CleanupExpiredBuyerSessionsResponse:
         _ = request
-        result = self._execute(context, self.api.cleanup_expired_buyer_sessions)
+        now_iso = datetime.utcnow().isoformat()
+        result = self._execute(
+            context,
+            lambda: self._call_api("cleanup_expired_buyer_sessions", now_iso=now_iso),
+        )
         return customer_db_pb2.CleanupExpiredBuyerSessionsResponse(
             deleted_count=result["deleted_count"]
         )
@@ -314,7 +351,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.CleanupBuyerSessionResponse:
         result = self._execute(
             context,
-            lambda: self.api.cleanup_buyer_session(session_id=request.session_id),
+            lambda: self._call_api("cleanup_buyer_session", session_id=request.session_id),
         )
         return customer_db_pb2.CleanupBuyerSessionResponse(deleted=result["deleted"])
 
@@ -323,9 +360,16 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         request: customer_db_pb2.CreateSellerSessionRequest,
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.CreateSellerSessionResponse:
+        now_iso = datetime.utcnow().isoformat()
+        session_id = secrets.token_hex(32)
         result = self._execute(
             context,
-            lambda: self.api.create_seller_session(seller_id=request.seller_id),
+            lambda: self._call_api(
+                "create_seller_session",
+                seller_id=request.seller_id,
+                session_id=session_id,
+                now_iso=now_iso,
+            ),
         )
         return customer_db_pb2.CreateSellerSessionResponse(session_id=result["session_id"])
 
@@ -334,9 +378,14 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         request: customer_db_pb2.ValidateSellerSessionRequest,
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.ValidateSellerSessionResponse:
+        now_iso = datetime.utcnow().isoformat()
         result = self._execute(
             context,
-            lambda: self.api.validate_seller_session(session_id=request.session_id),
+            lambda: self._call_api(
+                "validate_seller_session",
+                session_id=request.session_id,
+                now_iso=now_iso,
+            ),
         )
         response = customer_db_pb2.ValidateSellerSessionResponse(
             valid=result["valid"],
@@ -357,7 +406,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.DeleteSellerSessionResponse:
         result = self._execute(
             context,
-            lambda: self.api.delete_seller_session(session_id=request.session_id),
+            lambda: self._call_api("delete_seller_session", session_id=request.session_id),
         )
         return customer_db_pb2.DeleteSellerSessionResponse(deleted=result["deleted"])
 
@@ -366,9 +415,14 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         request: customer_db_pb2.TouchSellerSessionRequest,
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.TouchSellerSessionResponse:
+        now_iso = datetime.utcnow().isoformat()
         result = self._execute(
             context,
-            lambda: self.api.touch_seller_session(session_id=request.session_id),
+            lambda: self._call_api(
+                "touch_seller_session",
+                session_id=request.session_id,
+                now_iso=now_iso,
+            ),
         )
         return customer_db_pb2.TouchSellerSessionResponse(touched=result["touched"])
 
@@ -378,7 +432,11 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.CleanupExpiredSellerSessionsResponse:
         _ = request
-        result = self._execute(context, self.api.cleanup_expired_seller_sessions)
+        now_iso = datetime.utcnow().isoformat()
+        result = self._execute(
+            context,
+            lambda: self._call_api("cleanup_expired_seller_sessions", now_iso=now_iso),
+        )
         return customer_db_pb2.CleanupExpiredSellerSessionsResponse(
             deleted_count=result["deleted_count"]
         )
@@ -390,7 +448,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.CleanupSellerSessionResponse:
         result = self._execute(
             context,
-            lambda: self.api.cleanup_seller_session(session_id=request.session_id),
+            lambda: self._call_api("cleanup_seller_session", session_id=request.session_id),
         )
         return customer_db_pb2.CleanupSellerSessionResponse(deleted=result["deleted"])
 
@@ -400,7 +458,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.GetSessionCartResponse:
         result = self._execute(
-            context, lambda: self.api.get_session_cart(session_id=request.session_id)
+            context, lambda: self._call_api("get_session_cart", session_id=request.session_id)
         )
         return customer_db_pb2.GetSessionCartResponse(
             items=[self._cart_item_message(item) for item in result["items"]]
@@ -413,7 +471,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.SetSessionCartItemResponse:
         result = self._execute(
             context,
-            lambda: self.api.set_session_cart_item(
+            lambda: self._call_api("set_session_cart_item",
                 session_id=request.session_id,
                 item_category=request.item_category,
                 item_id=request.item_id,
@@ -432,7 +490,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.RemoveSessionCartItemResponse:
         result = self._execute(
             context,
-            lambda: self.api.remove_session_cart_item(
+            lambda: self._call_api("remove_session_cart_item",
                 session_id=request.session_id,
                 item_category=request.item_category,
                 item_id=request.item_id,
@@ -446,7 +504,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.ClearSessionCartResponse:
         result = self._execute(
-            context, lambda: self.api.clear_session_cart(session_id=request.session_id)
+            context, lambda: self._call_api("clear_session_cart", session_id=request.session_id)
         )
         return customer_db_pb2.ClearSessionCartResponse(
             cleared_count=result["cleared_count"]
@@ -458,7 +516,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.GetSavedCartResponse:
         result = self._execute(
-            context, lambda: self.api.get_saved_cart(buyer_id=request.buyer_id)
+            context, lambda: self._call_api("get_saved_cart", buyer_id=request.buyer_id)
         )
         return customer_db_pb2.GetSavedCartResponse(
             items=[self._cart_item_message(item) for item in result["items"]]
@@ -469,7 +527,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.SaveCartResponse:
         result = self._execute(
             context,
-            lambda: self.api.save_cart(
+            lambda: self._call_api("save_cart",
                 session_id=request.session_id,
                 buyer_id=request.buyer_id,
             ),
@@ -483,7 +541,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.ClearSavedCartResponse:
         result = self._execute(
             context,
-            lambda: self.api.clear_saved_cart(buyer_id=request.buyer_id),
+            lambda: self._call_api("clear_saved_cart", buyer_id=request.buyer_id),
         )
         return customer_db_pb2.ClearSavedCartResponse(
             cleared_count=result["cleared_count"]
@@ -496,7 +554,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.LoadSavedCartResponse:
         result = self._execute(
             context,
-            lambda: self.api.load_saved_cart(
+            lambda: self._call_api("load_saved_cart",
                 session_id=request.session_id,
                 buyer_id=request.buyer_id,
             ),
@@ -510,13 +568,15 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
     ) -> customer_db_pb2.AddPurchaseResponse:
         # `quantity` is optional in proto; default to 1 when not set.
         quantity = request.quantity if request.HasField("quantity") else 1
+        purchased_at_iso = datetime.utcnow().isoformat()
         result = self._execute(
             context,
-            lambda: self.api.add_purchase(
+            lambda: self._call_api("add_purchase",
                 buyer_id=request.buyer_id,
                 item_category=request.item_category,
                 item_id=request.item_id,
                 quantity=quantity,
+                purchased_at_iso=purchased_at_iso,
             ),
         )
         return customer_db_pb2.AddPurchaseResponse(purchase_id=result["purchase_id"])
@@ -527,7 +587,7 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
         context: grpc.ServicerContext,
     ) -> customer_db_pb2.GetPurchaseHistoryResponse:
         result = self._execute(
-            context, lambda: self.api.get_purchase_history(buyer_id=request.buyer_id)
+            context, lambda: self._call_api("get_purchase_history", buyer_id=request.buyer_id)
         )
         return customer_db_pb2.GetPurchaseHistoryResponse(
             purchases=[self._purchase_message(purchase) for purchase in result["purchases"]]
@@ -538,12 +598,27 @@ def run_server(host: str, port: int):
     # Initialize database
     engine = init_db()
     db_session_factory = make_session_factory(engine=engine)
+    domain_api = CustomerDomainApi(db_session_factory)
+    sequencer_engine: CustomerSequencerEngine | None = None
+
+    sequencer_config = CustomerSequencerConfig.from_env()
+    logger.info("Customer sequencer enabled: %s", sequencer_config.enabled)
+    if sequencer_config.enabled:
+        logger.info("Customer sequencer self id: %s", sequencer_config.self_id)
+        logger.info("Customer sequencer members: %s", sequencer_config.members)
+        sequencer_engine = CustomerSequencerEngine(
+            config=sequencer_config,
+            apply_fn=lambda method, kwargs: getattr(domain_api, method)(**kwargs),
+            logger=logger,
+        )
+        sequencer_engine.start()
+    api = domain_api
 
     try:
         # Thread pool matches the concurrent RPC model for blocking DB operations.
         server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=64))
         customer_db_pb2_grpc.add_CustomerDbServiceServicer_to_server(
-            CustomerDbService(db_session_factory),
+            CustomerDbService(api, sequencer_engine=sequencer_engine),
             server,
         )
         server.add_insecure_port(f"{host}:{port}")
@@ -551,6 +626,11 @@ def run_server(host: str, port: int):
         logger.info("Customer DB gRPC server listening on %s:%s", host, port)
         server.wait_for_termination()
     finally:
+        if sequencer_engine is not None:
+            try:
+                sequencer_engine.stop()
+            except Exception:
+                pass
         try:
             # Ensure pooled DB connections are closed on shutdown.
             engine.dispose()

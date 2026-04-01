@@ -1,5 +1,6 @@
 """Typed gRPC clients for customer and product database services."""
 
+import threading
 from datetime import datetime, timezone
 
 import grpc
@@ -79,14 +80,63 @@ class CustomerDbClient:
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
-        self._channel = grpc.insecure_channel(f"{host}:{port}")
-        self._stub = customer_db_pb2_grpc.CustomerDbServiceStub(self._channel)
+        self._channels: list[grpc.Channel] = []
+        self._stubs: list[customer_db_pb2_grpc.CustomerDbServiceStub] = []
+        self._round_robin_lock = threading.Lock()
+        self._next_stub_index = 0
+
+        raw_targets = [token.strip() for token in host.split(",") if token.strip()]
+        if not raw_targets:
+            raw_targets = [host.strip()] if host.strip() else ["localhost"]
+
+        for target in raw_targets:
+            full_target = target
+            # Allow explicit host:port entries, otherwise use the supplied port arg.
+            if ":" not in target or not target.rsplit(":", 1)[1].isdigit():
+                full_target = f"{target}:{port}"
+            channel = grpc.insecure_channel(full_target)
+            stub = customer_db_pb2_grpc.CustomerDbServiceStub(channel)
+            self._channels.append(channel)
+            self._stubs.append(stub)
 
     def close(self) -> None:
-        self._channel.close()
+        for channel in self._channels:
+            channel.close()
+
+    @staticmethod
+    def _is_retryable(exc: grpc.RpcError) -> bool:
+        return exc.code() in {
+            grpc.StatusCode.UNAVAILABLE,
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+        }
+
+    def _rpc(self, method_name: str, request):
+        if not self._stubs:
+            raise RuntimeError("No customer DB endpoints configured")
+
+        with self._round_robin_lock:
+            start_index = self._next_stub_index
+            self._next_stub_index = (self._next_stub_index + 1) % len(self._stubs)
+
+        last_retryable_error: grpc.RpcError | None = None
+        for offset in range(len(self._stubs)):
+            stub = self._stubs[(start_index + offset) % len(self._stubs)]
+            method = getattr(stub, method_name)
+            try:
+                return method(request)
+            except grpc.RpcError as exc:
+                if self._is_retryable(exc):
+                    last_retryable_error = exc
+                    continue
+                raise
+
+        if last_retryable_error is not None:
+            raise last_retryable_error
+        raise RuntimeError("All customer DB endpoints failed")
 
     def create_buyer(self, *, buyer_name: str, login_name: str, password: str) -> dict:
-        response = self._stub.CreateBuyer(
+        response = self._rpc(
+            "CreateBuyer",
             customer_db_pb2.CreateBuyerRequest(
                 buyer_name=buyer_name,
                 login_name=login_name,
@@ -96,7 +146,8 @@ class CustomerDbClient:
         return _buyer_to_dict(response.buyer)
 
     def authenticate_buyer(self, *, login_name: str, password: str) -> dict:
-        response = self._stub.AuthenticateBuyer(
+        response = self._rpc(
+            "AuthenticateBuyer",
             customer_db_pb2.AuthenticateBuyerRequest(
                 login_name=login_name,
                 password=password,
@@ -109,7 +160,7 @@ class CustomerDbClient:
         }
 
     def get_buyer(self, *, buyer_id: int) -> dict:
-        response = self._stub.GetBuyer(customer_db_pb2.GetBuyerRequest(buyer_id=buyer_id))
+        response = self._rpc("GetBuyer", customer_db_pb2.GetBuyerRequest(buyer_id=buyer_id))
         buyer = _buyer_to_dict(response.buyer) if response.found and response.HasField("buyer") else None
         return {"buyer": buyer}
 
@@ -117,11 +168,12 @@ class CustomerDbClient:
         request = customer_db_pb2.IncrementBuyerPurchasesRequest(buyer_id=buyer_id)
         if amount is not None:
             request.amount = amount
-        response = self._stub.IncrementBuyerPurchases(request)
+        response = self._rpc("IncrementBuyerPurchases", request)
         return {"items_purchased": response.items_purchased}
 
     def create_seller(self, *, seller_name: str, login_name: str, password: str) -> dict:
-        response = self._stub.CreateSeller(
+        response = self._rpc(
+            "CreateSeller",
             customer_db_pb2.CreateSellerRequest(
                 seller_name=seller_name,
                 login_name=login_name,
@@ -131,7 +183,8 @@ class CustomerDbClient:
         return _seller_to_dict(response.seller)
 
     def authenticate_seller(self, *, login_name: str, password: str) -> dict:
-        response = self._stub.AuthenticateSeller(
+        response = self._rpc(
+            "AuthenticateSeller",
             customer_db_pb2.AuthenticateSellerRequest(
                 login_name=login_name,
                 password=password,
@@ -144,7 +197,7 @@ class CustomerDbClient:
         }
 
     def get_seller(self, *, seller_id: int) -> dict:
-        response = self._stub.GetSeller(customer_db_pb2.GetSellerRequest(seller_id=seller_id))
+        response = self._rpc("GetSeller", customer_db_pb2.GetSellerRequest(seller_id=seller_id))
         seller = _seller_to_dict(response.seller) if response.found and response.HasField("seller") else None
         return {"seller": seller}
 
@@ -155,7 +208,8 @@ class CustomerDbClient:
         thumbs_up_delta: int = 0,
         thumbs_down_delta: int = 0,
     ) -> dict:
-        response = self._stub.UpdateSellerFeedback(
+        response = self._rpc(
+            "UpdateSellerFeedback",
             customer_db_pb2.UpdateSellerFeedbackRequest(
                 seller_id=seller_id,
                 thumbs_up_delta=thumbs_up_delta,
@@ -171,17 +225,19 @@ class CustomerDbClient:
         request = customer_db_pb2.IncrementSellerItemsSoldRequest(seller_id=seller_id)
         if amount is not None:
             request.amount = amount
-        response = self._stub.IncrementSellerItemsSold(request)
+        response = self._rpc("IncrementSellerItemsSold", request)
         return {"items_sold": response.items_sold}
 
     def create_buyer_session(self, *, buyer_id: int) -> dict:
-        response = self._stub.CreateBuyerSession(
+        response = self._rpc(
+            "CreateBuyerSession",
             customer_db_pb2.CreateBuyerSessionRequest(buyer_id=buyer_id)
         )
         return {"session_id": response.session_id}
 
     def validate_buyer_session(self, *, session_id: str) -> dict:
-        response = self._stub.ValidateBuyerSession(
+        response = self._rpc(
+            "ValidateBuyerSession",
             customer_db_pb2.ValidateBuyerSessionRequest(session_id=session_id)
         )
         buyer = _buyer_to_dict(response.buyer) if response.HasField("buyer") else None
@@ -196,37 +252,43 @@ class CustomerDbClient:
         }
 
     def delete_buyer_session(self, *, session_id: str) -> dict:
-        response = self._stub.DeleteBuyerSession(
+        response = self._rpc(
+            "DeleteBuyerSession",
             customer_db_pb2.DeleteBuyerSessionRequest(session_id=session_id)
         )
         return {"deleted": response.deleted}
 
     def touch_buyer_session(self, *, session_id: str) -> dict:
-        response = self._stub.TouchBuyerSession(
+        response = self._rpc(
+            "TouchBuyerSession",
             customer_db_pb2.TouchBuyerSessionRequest(session_id=session_id)
         )
         return {"touched": response.touched}
 
     def cleanup_expired_buyer_sessions(self) -> dict:
-        response = self._stub.CleanupExpiredBuyerSessions(
+        response = self._rpc(
+            "CleanupExpiredBuyerSessions",
             customer_db_pb2.CleanupExpiredBuyerSessionsRequest()
         )
         return {"deleted_count": response.deleted_count}
 
     def cleanup_buyer_session(self, *, session_id: str) -> dict:
-        response = self._stub.CleanupBuyerSession(
+        response = self._rpc(
+            "CleanupBuyerSession",
             customer_db_pb2.CleanupBuyerSessionRequest(session_id=session_id)
         )
         return {"deleted": response.deleted}
 
     def create_seller_session(self, *, seller_id: int) -> dict:
-        response = self._stub.CreateSellerSession(
+        response = self._rpc(
+            "CreateSellerSession",
             customer_db_pb2.CreateSellerSessionRequest(seller_id=seller_id)
         )
         return {"session_id": response.session_id}
 
     def validate_seller_session(self, *, session_id: str) -> dict:
-        response = self._stub.ValidateSellerSession(
+        response = self._rpc(
+            "ValidateSellerSession",
             customer_db_pb2.ValidateSellerSessionRequest(session_id=session_id)
         )
         seller = _seller_to_dict(response.seller) if response.HasField("seller") else None
@@ -241,31 +303,36 @@ class CustomerDbClient:
         }
 
     def delete_seller_session(self, *, session_id: str) -> dict:
-        response = self._stub.DeleteSellerSession(
+        response = self._rpc(
+            "DeleteSellerSession",
             customer_db_pb2.DeleteSellerSessionRequest(session_id=session_id)
         )
         return {"deleted": response.deleted}
 
     def touch_seller_session(self, *, session_id: str) -> dict:
-        response = self._stub.TouchSellerSession(
+        response = self._rpc(
+            "TouchSellerSession",
             customer_db_pb2.TouchSellerSessionRequest(session_id=session_id)
         )
         return {"touched": response.touched}
 
     def cleanup_expired_seller_sessions(self) -> dict:
-        response = self._stub.CleanupExpiredSellerSessions(
+        response = self._rpc(
+            "CleanupExpiredSellerSessions",
             customer_db_pb2.CleanupExpiredSellerSessionsRequest()
         )
         return {"deleted_count": response.deleted_count}
 
     def cleanup_seller_session(self, *, session_id: str) -> dict:
-        response = self._stub.CleanupSellerSession(
+        response = self._rpc(
+            "CleanupSellerSession",
             customer_db_pb2.CleanupSellerSessionRequest(session_id=session_id)
         )
         return {"deleted": response.deleted}
 
     def get_session_cart(self, *, session_id: str) -> dict:
-        response = self._stub.GetSessionCart(
+        response = self._rpc(
+            "GetSessionCart",
             customer_db_pb2.GetSessionCartRequest(session_id=session_id)
         )
         return {"items": [_cart_item_to_dict(item) for item in response.items]}
@@ -278,7 +345,8 @@ class CustomerDbClient:
         item_id: int,
         quantity: int,
     ) -> dict:
-        response = self._stub.SetSessionCartItem(
+        response = self._rpc(
+            "SetSessionCartItem",
             customer_db_pb2.SetSessionCartItemRequest(
                 session_id=session_id,
                 item_category=item_category,
@@ -292,7 +360,8 @@ class CustomerDbClient:
         }
 
     def remove_session_cart_item(self, *, session_id: str, item_category: int, item_id: int) -> dict:
-        response = self._stub.RemoveSessionCartItem(
+        response = self._rpc(
+            "RemoveSessionCartItem",
             customer_db_pb2.RemoveSessionCartItemRequest(
                 session_id=session_id,
                 item_category=item_category,
@@ -302,29 +371,33 @@ class CustomerDbClient:
         return {"removed": response.removed}
 
     def clear_session_cart(self, *, session_id: str) -> dict:
-        response = self._stub.ClearSessionCart(
+        response = self._rpc(
+            "ClearSessionCart",
             customer_db_pb2.ClearSessionCartRequest(session_id=session_id)
         )
         return {"cleared_count": response.cleared_count}
 
     def get_saved_cart(self, *, buyer_id: int) -> dict:
-        response = self._stub.GetSavedCart(customer_db_pb2.GetSavedCartRequest(buyer_id=buyer_id))
+        response = self._rpc("GetSavedCart", customer_db_pb2.GetSavedCartRequest(buyer_id=buyer_id))
         return {"items": [_cart_item_to_dict(item) for item in response.items]}
 
     def save_cart(self, *, session_id: str, buyer_id: int) -> dict:
-        response = self._stub.SaveCart(
+        response = self._rpc(
+            "SaveCart",
             customer_db_pb2.SaveCartRequest(session_id=session_id, buyer_id=buyer_id)
         )
         return {"saved_count": response.saved_count}
 
     def clear_saved_cart(self, *, buyer_id: int) -> dict:
-        response = self._stub.ClearSavedCart(
+        response = self._rpc(
+            "ClearSavedCart",
             customer_db_pb2.ClearSavedCartRequest(buyer_id=buyer_id)
         )
         return {"cleared_count": response.cleared_count}
 
     def load_saved_cart(self, *, session_id: str, buyer_id: int) -> dict:
-        response = self._stub.LoadSavedCart(
+        response = self._rpc(
+            "LoadSavedCart",
             customer_db_pb2.LoadSavedCartRequest(session_id=session_id, buyer_id=buyer_id)
         )
         return {"loaded_count": response.loaded_count}
@@ -344,11 +417,12 @@ class CustomerDbClient:
         )
         if quantity is not None:
             request.quantity = quantity
-        response = self._stub.AddPurchase(request)
+        response = self._rpc("AddPurchase", request)
         return {"purchase_id": response.purchase_id}
 
     def get_purchase_history(self, *, buyer_id: int) -> dict:
-        response = self._stub.GetPurchaseHistory(
+        response = self._rpc(
+            "GetPurchaseHistory",
             customer_db_pb2.GetPurchaseHistoryRequest(buyer_id=buyer_id)
         )
         return {"purchases": [_purchase_to_dict(purchase) for purchase in response.purchases]}

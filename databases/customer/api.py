@@ -1,7 +1,6 @@
 """Typed domain API for customer database operations."""
 
-import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -14,10 +13,18 @@ from databases.customer.db import (
     BuyerSessionCartItem,
     Seller,
     SellerSession,
-    utcnow,
 )
 
 SESSION_TIMEOUT_MINUTES = 5
+
+
+def _resolve_now(now_iso: str) -> datetime:
+    if not now_iso:
+        raise ValueError("Missing required field: now_iso")
+    parsed = datetime.fromisoformat(now_iso)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 class CustomerDomainApi:
@@ -236,10 +243,18 @@ class CustomerDomainApi:
 
     # -- Buyer session related CustomerDB API --
 
-    def create_buyer_session(self, *, buyer_id: int) -> dict[str, Any]:
+    def create_buyer_session(
+        self,
+        *,
+        buyer_id: int,
+        session_id: str,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Create a new buyer session."""
         if buyer_id is None:
             raise ValueError("Missing required field: buyer_id")
+        if not session_id:
+            raise ValueError("Missing required field: session_id")
 
         with self.db_session_factory() as db:
             # Verify buyer exists
@@ -247,8 +262,7 @@ class CustomerDomainApi:
             if not buyer:
                 raise ValueError(f"Buyer {buyer_id} not found")
 
-            session_id = secrets.token_hex(32)
-            now = utcnow()
+            now = _resolve_now(now_iso)
 
             session = BuyerSession(
                 session_id=session_id,
@@ -261,7 +275,12 @@ class CustomerDomainApi:
 
             return {"session_id": session_id}
 
-    def validate_buyer_session(self, *, session_id: str) -> dict[str, Any]:
+    def validate_buyer_session(
+        self,
+        *,
+        session_id: str,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Validate a buyer session and return buyer info if valid.
 
         This is a read-only operation. If the session is expired, it returns
@@ -282,7 +301,7 @@ class CustomerDomainApi:
                 }
 
             # Check for timeout - but don't delete here (read-only)
-            timeout_threshold = datetime.utcnow() - timedelta(
+            timeout_threshold = _resolve_now(now_iso) - timedelta(
                 minutes=SESSION_TIMEOUT_MINUTES
             )
             if session.last_activity_at < timeout_threshold:
@@ -317,7 +336,12 @@ class CustomerDomainApi:
                 return {"deleted": True}
             return {"deleted": False}
 
-    def touch_buyer_session(self, *, session_id: str) -> dict[str, Any]:
+    def touch_buyer_session(
+        self,
+        *,
+        session_id: str,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Update last_activity_at for a buyer session."""
         if not session_id:
             raise ValueError("Missing required field: session_id")
@@ -327,13 +351,17 @@ class CustomerDomainApi:
             if not session:
                 return {"touched": False}
 
-            session.last_activity_at = utcnow()
+            session.last_activity_at = _resolve_now(now_iso)
             db.commit()
             return {"touched": True}
 
-    def cleanup_expired_buyer_sessions(self) -> dict[str, Any]:
+    def cleanup_expired_buyer_sessions(
+        self,
+        *,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Delete all expired buyer sessions."""
-        timeout_threshold = datetime.utcnow() - timedelta(
+        timeout_threshold = _resolve_now(now_iso) - timedelta(
             minutes=SESSION_TIMEOUT_MINUTES
         )
 
@@ -365,10 +393,18 @@ class CustomerDomainApi:
 
     # -- Seller session related CustomerDB API --
 
-    def create_seller_session(self, *, seller_id: int) -> dict[str, Any]:
+    def create_seller_session(
+        self,
+        *,
+        seller_id: int,
+        session_id: str,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Create a new seller session."""
         if seller_id is None:
             raise ValueError("Missing required field: seller_id")
+        if not session_id:
+            raise ValueError("Missing required field: session_id")
 
         with self.db_session_factory() as db:
             # Verify seller exists
@@ -376,8 +412,7 @@ class CustomerDomainApi:
             if not seller:
                 raise ValueError(f"Seller {seller_id} not found")
 
-            session_id = secrets.token_hex(32)
-            now = utcnow()
+            now = _resolve_now(now_iso)
 
             session = SellerSession(
                 session_id=session_id,
@@ -390,7 +425,12 @@ class CustomerDomainApi:
 
             return {"session_id": session_id}
 
-    def validate_seller_session(self, *, session_id: str) -> dict[str, Any]:
+    def validate_seller_session(
+        self,
+        *,
+        session_id: str,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Validate a seller session and return seller info if valid.
 
         This is a read-only operation. If the session is expired, it returns
@@ -411,7 +451,7 @@ class CustomerDomainApi:
                 }
 
             # Check for timeout - but don't delete here (read-only)
-            timeout_threshold = datetime.utcnow() - timedelta(
+            timeout_threshold = _resolve_now(now_iso) - timedelta(
                 minutes=SESSION_TIMEOUT_MINUTES
             )
             if session.last_activity_at < timeout_threshold:
@@ -448,7 +488,12 @@ class CustomerDomainApi:
                 return {"deleted": True}
             return {"deleted": False}
 
-    def touch_seller_session(self, *, session_id: str) -> dict[str, Any]:
+    def touch_seller_session(
+        self,
+        *,
+        session_id: str,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Update last_activity_at for a seller session."""
         if not session_id:
             raise ValueError("Missing required field: session_id")
@@ -458,13 +503,17 @@ class CustomerDomainApi:
             if not session:
                 return {"touched": False}
 
-            session.last_activity_at = utcnow()
+            session.last_activity_at = _resolve_now(now_iso)
             db.commit()
             return {"touched": True}
 
-    def cleanup_expired_seller_sessions(self) -> dict[str, Any]:
+    def cleanup_expired_seller_sessions(
+        self,
+        *,
+        now_iso: str,
+    ) -> dict[str, Any]:
         """Delete all expired seller sessions."""
-        timeout_threshold = datetime.utcnow() - timedelta(
+        timeout_threshold = _resolve_now(now_iso) - timedelta(
             minutes=SESSION_TIMEOUT_MINUTES
         )
 
@@ -748,6 +797,7 @@ class CustomerDomainApi:
         item_category: int,
         item_id: int,
         quantity: int = 1,
+        purchased_at_iso: str,
     ) -> dict[str, Any]:
         """Record a purchase for a buyer."""
 
@@ -757,6 +807,8 @@ class CustomerDomainApi:
             raise ValueError(
                 "Missing required fields: buyer_id, item_category, item_id"
             )
+        if not purchased_at_iso:
+            raise ValueError("Missing required field: purchased_at_iso")
 
         with self.db_session_factory() as db:
             purchase = BuyerPurchase(
@@ -764,6 +816,7 @@ class CustomerDomainApi:
                 item_category=item_category,
                 item_id=item_id,
                 quantity=quantity,
+                purchased_at=_resolve_now(purchased_at_iso),
             )
             db.add(purchase)
             db.commit()

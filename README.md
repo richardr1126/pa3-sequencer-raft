@@ -26,6 +26,13 @@ This project implements a 3-tier architecture for an online marketplace platform
 - SQLite uses a locking mechanism to serialize writes, so threads may block waiting for the write lock for up to 10 mins (600 seconds).
 
 ##### Customer DB assumptions
+- Replicated through a rotating sequencer protocol over UDP for ordered delivery on 3 or more nodes.
+- Backend buyers and sellers customer db client uses client-side round-robin endpoint selection with retry failover across the customer sequencer nodes.
+- Sequencer protocol state is in-memory and reset on process restart. Not durable.
+- Timestamps and session IDs used by replicated operations are generated once in the Customer DB gRPC handler and passed explicitly (`now_iso`, `session_id`, `purchased_at_iso`).
+- Request message metadata includes: `sender_id`, `request_sender_id`, `request_local_seq`, `method`, `kwargs`, and `recv_upto`.
+- Sequence message metadata includes: `sender_id`, `global_seq`, `request_sender_id`, `request_local_seq`, and `recv_upto`.
+- Retransmit message metadata includes: `sender_id`, `target_id`, `mode` (`status|request|sequence`), plus `request_sender_id`/`request_local_seq` for request-NACKs, `global_seq` for sequence-NACKs, and `recv_upto`.
 - Session cart and saved cart are separate; Cart.SaveCart overwrites saved cart; Cart.LoadSavedCart overwrites session cart; setting quantity <= 0 removes the cart item.
 - Sessions are cleaned up by utilizing a "last touched" timestamp that is updated on each request; if a session is inactive for 5+ mins, it is expired and deleted from the DB. Backend services will "touch" sessions on each request to prevent expiration during active use.
 
