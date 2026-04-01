@@ -3,8 +3,9 @@
 import argparse
 import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, Request
@@ -65,18 +66,22 @@ def create_app(
     logger.info(f"  Customer DB: {customer_db_host}:{customer_db_port}")
     logger.info(f"  Product DB: {product_db_host}:{product_db_port}")
 
-    app = FastAPI(title="Marketplace Seller Backend")
+    customer_db = CustomerDbClient(customer_db_host, customer_db_port)
+    product_db = ProductDbClient(product_db_host, product_db_port)
+    shared_service = SellerService(customer_db, product_db)
 
-    def get_service() -> Generator[SellerService, None, None]:
-        # Keep request-scoped DB clients so each request has a clean transport lifecycle.
-        customer_db = CustomerDbClient(customer_db_host, customer_db_port)
-        product_db = ProductDbClient(product_db_host, product_db_port)
-        service = SellerService(customer_db, product_db)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
         try:
-            yield service
+            yield
         finally:
             customer_db.close()
             product_db.close()
+
+    app = FastAPI(title="Marketplace Seller Backend", lifespan=lifespan)
+
+    def get_service() -> SellerService:
+        return shared_service
 
     def require_session_actor(
         service: SellerService = Depends(get_service),

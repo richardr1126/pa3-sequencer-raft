@@ -436,6 +436,8 @@ class ProductDbClient:
         self.port = port
         self._channels: list[grpc.Channel] = []
         self._stubs: list[product_db_pb2_grpc.ProductDbServiceStub] = []
+        self._round_robin_lock = threading.Lock()
+        self._next_stub_index = 0
 
         raw_targets = [token.strip() for token in host.split(",") if token.strip()]
         if not raw_targets:
@@ -463,8 +465,17 @@ class ProductDbClient:
         }
 
     def _rpc(self, method_name: str, request):
+        if not self._stubs:
+            raise RuntimeError("No product DB endpoints configured")
+
+        with self._round_robin_lock:
+            start_index = self._next_stub_index
+            self._next_stub_index = (self._next_stub_index + 1) % len(self._stubs)
+
         last_retryable_error: grpc.RpcError | None = None
-        for stub in self._stubs:
+        for offset in range(len(self._stubs)):
+            index = (start_index + offset) % len(self._stubs)
+            stub = self._stubs[index]
             method = getattr(stub, method_name)
             try:
                 return method(request)
@@ -476,7 +487,7 @@ class ProductDbClient:
 
         if last_retryable_error is not None:
             raise last_retryable_error
-        raise RuntimeError("No product DB endpoints configured")
+        raise RuntimeError("All product DB endpoints failed")
 
     def create_item(
         self,

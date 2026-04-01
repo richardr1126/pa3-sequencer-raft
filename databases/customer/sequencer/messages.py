@@ -48,7 +48,7 @@ class RetransmitMessage(BaseModel):
     type: Literal["retransmit"] = "retransmit"
     sender_id: int
     target_id: int | None = None
-    mode: Literal["status", "request", "sequence"]
+    mode: Literal["progress", "request", "sequence"]
     request_sender_id: int | None = None
     request_local_seq: int | None = None
     global_seq: int | None = None

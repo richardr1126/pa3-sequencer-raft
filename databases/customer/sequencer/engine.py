@@ -56,9 +56,11 @@ class CustomerSequencerEngine:
         self._transport = UdpTransport(
             bind_host=config.udp_bind_host,
             bind_port=config.udp_bind_port,
-            socket_timeout_sec=config.socket_timeout_sec,
             drop_probability=config.drop_probability,
         )
+        self._logged_missing_requests: set[tuple[int, int]] = set()
+        self._logged_missing_sequences: set[int] = set()
+        self._last_progress_broadcast_upto = -1
 
     @staticmethod
     def _parse_addr(value: str) -> tuple[str, int]:
@@ -84,6 +86,16 @@ class CustomerSequencerEngine:
         ]
         for thread in self._threads:
             thread.start()
+        self._log.info(
+            "customer-sequencer started: node=%d bind=%s:%d members=%d retry_sec=%.3f timeout_sec=%.1f drop_prob=%.2f",
+            self.config.self_id,
+            self.config.udp_bind_host,
+            self.config.udp_bind_port,
+            len(self.config.members),
+            self.config.retransmit_retry_sec,
+            self.config.command_timeout_sec,
+            self.config.drop_probability,
+        )
 
     def stop(self) -> None:
         with self._lock:
@@ -95,6 +107,7 @@ class CustomerSequencerEngine:
         for thread in self._threads:
             thread.join(timeout=1.0)
         self._threads.clear()
+        self._log.info("customer-sequencer stopped: node=%d", self.config.self_id)
 
     def is_running(self) -> bool:
         with self._lock:
@@ -149,6 +162,20 @@ class CustomerSequencerEngine:
             if remaining <= 0:
                 with self._lock:
                     self._state.pending_local_commands.pop(req_id, None)
+                    assigned_upto = self._state.highest_contiguous_sequence
+                    received_upto = self._state.highest_contiguous_received_sequence
+                    delivered_upto = self._state.highest_contiguous_delivered_sequence
+                    pending_local = len(self._state.pending_local_commands)
+                self._log.error(
+                    "customer-sequencer timeout: req_id=%s method=%s wait_sec=%.2f assigned_upto=%d received_upto=%d delivered_upto=%d pending_local=%d",
+                    req_id,
+                    method,
+                    self.config.command_timeout_sec,
+                    assigned_upto,
+                    received_upto,
+                    delivered_upto,
+                    pending_local,
+                )
                 raise CustomerSequencerError(
                     f"Timed out waiting for replicated command {method} ({req_id})"
                 )
@@ -168,10 +195,22 @@ class CustomerSequencerEngine:
         return pending.result
 
     def _on_wire_message(self, message: WireMessage) -> None:
+        progress_messages: list[tuple[int, RetransmitMessage]] = []
         with self._lock:
             if not self._running:
                 return
+            previous_local_recv_upto = self._state.local_receive_upto()
+            sender_recv_upto = getattr(message, "recv_upto", None)
             self._handle_wire_message_locked(message)
+            progress_messages = self._collect_progress_messages_locked(
+                previous_local_recv_upto=previous_local_recv_upto,
+                sender_id=int(message.sender_id),
+                sender_recv_upto=(
+                    int(sender_recv_upto) if isinstance(sender_recv_upto, int) else None
+                ),
+            )
+        for target_id, progress_message in progress_messages:
+            self._send_message_to_member(target_id, progress_message)
 
     def _handle_wire_message_locked(self, message: WireMessage) -> None:
         sender_id = int(message.sender_id)
@@ -210,11 +249,27 @@ class CustomerSequencerEngine:
 
         now = time.monotonic()
         for missing_local in missing_locals:
+            key = (req_sender_id, missing_local)
+            if key not in self._logged_missing_requests:
+                self._logged_missing_requests.add(key)
+                self._log.warning(
+                    "customer-sequencer gap detected: type=request sender=%d local_seq=%d detected_by=request",
+                    req_sender_id,
+                    missing_local,
+                )
             self._send_retransmit_request_locked(
                 target_sender_id=req_sender_id,
                 request_sender_id=req_sender_id,
                 request_local_seq=missing_local,
                 now=now,
+            )
+        key = (req_sender_id, req_local_seq)
+        if key in self._logged_missing_requests:
+            self._logged_missing_requests.remove(key)
+            self._log.info(
+                "customer-sequencer gap recovered: type=request sender=%d local_seq=%d",
+                req_sender_id,
+                req_local_seq,
             )
 
     def _on_sequence_locked(self, message: SequenceMessage) -> None:
@@ -241,6 +296,14 @@ class CustomerSequencerEngine:
 
         if req_id not in self._state.request_payload_by_id:
             # Request can be missing when sequence arrives due to UDP reordering/loss.
+            key = (req_sender_id, req_local_seq)
+            if key not in self._logged_missing_requests:
+                self._logged_missing_requests.add(key)
+                self._log.warning(
+                    "customer-sequencer gap detected: type=request sender=%d local_seq=%d detected_by=sequence",
+                    req_sender_id,
+                    req_local_seq,
+                )
             self._send_retransmit_request_locked(
                 target_sender_id=req_sender_id,
                 request_sender_id=req_sender_id,
@@ -253,11 +316,23 @@ class CustomerSequencerEngine:
             for missing_seq in range(previous_highest_contiguous + 1, global_seq):
                 if missing_seq in self._state.sequence_request_id_by_global:
                     continue
+                if missing_seq not in self._logged_missing_sequences:
+                    self._logged_missing_sequences.add(missing_seq)
+                    self._log.warning(
+                        "customer-sequencer gap detected: type=sequence global_seq=%d",
+                        missing_seq,
+                    )
                 self._send_retransmit_sequence_locked(
                     target_sender_id=missing_seq % self._member_count,
                     global_seq=missing_seq,
                     now=now,
                 )
+        if global_seq in self._logged_missing_sequences:
+            self._logged_missing_sequences.remove(global_seq)
+            self._log.info(
+                "customer-sequencer gap recovered: type=sequence global_seq=%d",
+                global_seq,
+            )
 
     def _on_retransmit_locked(self, message: RetransmitMessage) -> None:
         if message.target_id is not None and int(message.target_id) != self.config.self_id:
@@ -267,7 +342,7 @@ class CustomerSequencerEngine:
         if requester_id not in self.config.members:
             return
 
-        if message.mode == "status":
+        if message.mode == "progress":
             return
 
         if message.mode == "request":
@@ -280,6 +355,12 @@ class CustomerSequencerEngine:
             )
             if payload is None:
                 return
+            self._log.debug(
+                "customer-sequencer retransmit served: type=request to=%d sender=%d local_seq=%d",
+                requester_id,
+                int(req_sender_id),
+                int(req_local_seq),
+            )
             self._send_encoded_to_member(requester_id, payload)
             return
 
@@ -290,14 +371,75 @@ class CustomerSequencerEngine:
             payload = self._state.sequence_message_cache.get(int(global_seq))
             if payload is None:
                 return
+            self._log.debug(
+                "customer-sequencer retransmit served: type=sequence to=%d global_seq=%d",
+                requester_id,
+                int(global_seq),
+            )
             self._send_encoded_to_member(requester_id, payload)
             return
 
+    def _collect_progress_messages_locked(
+        self,
+        *,
+        previous_local_recv_upto: int,
+        sender_id: int | None = None,
+        sender_recv_upto: int | None = None,
+    ) -> list[tuple[int, RetransmitMessage]]:
+        current_recv_upto = self._state.local_receive_upto()
+        messages: list[tuple[int, RetransmitMessage]] = []
+        sent_targets: set[int] = set()
+
+        # Broadcast immediate progress when recv_upto advances.
+        if (
+            current_recv_upto > previous_local_recv_upto
+            and current_recv_upto > self._last_progress_broadcast_upto
+        ):
+            self._last_progress_broadcast_upto = current_recv_upto
+            for peer_id in self.config.members:
+                if peer_id == self.config.self_id:
+                    continue
+                messages.append(
+                    (
+                        peer_id,
+                        RetransmitMessage(
+                            sender_id=self.config.self_id,
+                            target_id=peer_id,
+                            mode="progress",
+                            recv_upto=current_recv_upto,
+                        ),
+                    )
+                )
+                sent_targets.add(peer_id)
+
+        # If sender appears behind our recv_upto, send targeted progress hint back.
+        if (
+            sender_id is not None
+            and sender_id != self.config.self_id
+            and sender_id in self.config.members
+            and isinstance(sender_recv_upto, int)
+            and current_recv_upto > sender_recv_upto
+            and sender_id not in sent_targets
+        ):
+            messages.append(
+                (
+                    sender_id,
+                    RetransmitMessage(
+                        sender_id=self.config.self_id,
+                        target_id=sender_id,
+                        mode="progress",
+                        recv_upto=current_recv_upto,
+                    ),
+                )
+            )
+
+        return messages
+
     def _maintenance_loop(self) -> None:
-        next_heartbeat_at = time.monotonic()
         while self.is_running():
             with self._lock:
                 now = time.monotonic()
+                previous_local_recv_upto = self._state.local_receive_upto()
                 self._state.peer_receive_upto_by_member[self.config.self_id] = (
                     self._state.local_receive_upto()
                 )
@@ -334,26 +476,9 @@ class CustomerSequencerEngine:
                 deliverable = self._state.next_deliverable(
                     majority=self.config.majority,
                 )
-
-                heartbeat_messages: list[tuple[int, RetransmitMessage]] = []
-                if now >= next_heartbeat_at:
-                    # Phase 3: send periodic recv_upto status heartbeats.
-                    recv_upto = self._state.local_receive_upto()
-                    for peer_id in self.config.members:
-                        if peer_id == self.config.self_id:
-                            continue
-                        heartbeat_messages.append(
-                            (
-                                peer_id,
-                                RetransmitMessage(
-                                    sender_id=self.config.self_id,
-                                    target_id=peer_id,
-                                    mode="status",
-                                    recv_upto=recv_upto,
-                                ),
-                            )
-                        )
-                    next_heartbeat_at = now + self.config.heartbeat_interval_sec
+                progress_messages = self._collect_progress_messages_locked(
+                    previous_local_recv_upto=previous_local_recv_upto,
+                )
 
             for payload in sequence_payloads:
                 self._broadcast_encoded(payload)
@@ -361,8 +486,8 @@ class CustomerSequencerEngine:
             for target_id, retransmit_message in retransmit_messages:
                 self._send_message_to_member(target_id, retransmit_message)
 
-            for target_id, heartbeat_message in heartbeat_messages:
-                self._send_message_to_member(target_id, heartbeat_message)
+            for target_id, progress_message in progress_messages:
+                self._send_message_to_member(target_id, progress_message)
 
             if deliverable is None:
                 time.sleep(0.01)
@@ -375,10 +500,20 @@ class CustomerSequencerEngine:
 
             result: dict[str, Any] | None = None
             error: Exception | None = None
+            started_at = time.monotonic()
             try:
                 result = self._apply_fn(method, kwargs)
             except Exception as exc:
                 error = exc
+            duration_ms = (time.monotonic() - started_at) * 1000.0
+            if duration_ms >= 100.0:
+                self._log.warning(
+                    "customer-sequencer slow apply: global_seq=%d req_id=%s method=%s duration_ms=%.1f",
+                    global_seq,
+                    req_id,
+                    method,
+                    duration_ms,
+                )
 
             with self._lock:
                 self._state.mark_delivered(

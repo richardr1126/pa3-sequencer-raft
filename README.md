@@ -32,13 +32,14 @@ This project implements a 3-tier architecture for an online marketplace platform
 - Timestamps and session IDs used by replicated operations are generated once in the Customer DB gRPC handler and passed explicitly (`now_iso`, `session_id`, `purchased_at_iso`).
 - Request message metadata includes: `sender_id`, `request_sender_id`, `request_local_seq`, `method`, `kwargs`, and `recv_upto`.
 - Sequence message metadata includes: `sender_id`, `global_seq`, `request_sender_id`, `request_local_seq`, and `recv_upto`.
-- Retransmit message metadata includes: `sender_id`, `target_id`, `mode` (`status|request|sequence`), plus `request_sender_id`/`request_local_seq` for request-NACKs, `global_seq` for sequence-NACKs, and `recv_upto`.
+- Retransmit message metadata includes: `sender_id`, `target_id`, `mode` (`progress|request|sequence`), plus `request_sender_id`/`request_local_seq` for request-NACKs, `global_seq` for sequence-NACKs, and `recv_upto`.
+- Progress propagation is event-driven: nodes send immediate `progress` updates when `recv_upto` advances (no periodic heartbeat loop).
 - Session cart and saved cart are separate; Cart.SaveCart overwrites saved cart; Cart.LoadSavedCart overwrites session cart; setting quantity <= 0 removes the cart item.
-- Sessions are cleaned up by utilizing a "last touched" timestamp that is updated on each request; if a session is inactive for 5+ mins, it is expired and deleted from the DB. Backend services will "touch" sessions on each request to prevent expiration during active use.
+- Sessions are cleaned up by utilizing a "last touched" timestamp; if a session is inactive for 5+ mins, it is expired and deleted from the DB. Backend services validate on each protected request and update last-activity periodically (every 30s while active) to reduce write amplification.
 
 ##### Product DB assumptions
 - Replicated through PySyncObj's Raft implementation for high availability on 3 or more nodes.
-- Backend buyers and sellers product db client can connect to any node in the product db Raft cluster through a failover list mechanism.
+- Backend buyers and sellers product db client uses client-side round-robin endpoint selection with retry failover across product DB nodes.
 - For product DB consistency, all reads received on any node are also forwarded to the Raft leader, so all operations are linearized through the leader's log.
 - Item IDs are composite keys of (int item_category, int item_id) where item category is the high-level category chosen by the seller and item_id is a unique identifier within that category (63-bit random integer w/ collision retries).
 - **Search semantics:** category match is exact; if keywords are provided, items are ranked by keyword match count; only non-deleted items with quantity > 0 are returned.

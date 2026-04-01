@@ -14,10 +14,8 @@ class CustomerSequencerConfig:
     udp_bind_host: str = "0.0.0.0"
     udp_bind_port: int = 12001
     command_timeout_sec: float = 10.0
-    heartbeat_interval_sec: float = 0.2
     retransmit_retry_sec: float = 0.3
     drop_probability: float = 0.0
-    socket_timeout_sec: float = 0.1
 
     @property
     def majority(self) -> int:
@@ -69,8 +67,6 @@ class CustomerSequencerConfig:
             udp_bind_host=bind_host,
             udp_bind_port=bind_port,
             command_timeout_sec=float(os.getenv("CUSTOMER_SEQUENCER_COMMAND_TIMEOUT_SEC", "10.0")),
-            heartbeat_interval_sec=float(os.getenv("CUSTOMER_SEQUENCER_HEARTBEAT_SEC", "0.2")),
             retransmit_retry_sec=float(os.getenv("CUSTOMER_SEQUENCER_RETRY_SEC", "0.3")),
             drop_probability=float(os.getenv("CUSTOMER_SEQUENCER_DROP_PROB", "0.0")),
-            socket_timeout_sec=float(os.getenv("CUSTOMER_SEQUENCER_SOCKET_TIMEOUT_SEC", "0.1")),
         )

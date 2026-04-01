@@ -11,7 +11,7 @@ from backends.common.errors import ApiError
 class SellerService:
     """Seller operations backed by customer/product DB gRPC services."""
 
-    SESSION_TOUCH_INTERVAL_SECONDS = 5.0
+    SESSION_TOUCH_INTERVAL_SECONDS = 30.0
 
     def __init__(self, customer_db: Any, product_db: Any):
         self.customer_db = customer_db

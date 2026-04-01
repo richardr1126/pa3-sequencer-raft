@@ -16,7 +16,7 @@ from backends.common.financial_client import (
 class BuyerService:
     """Buyer operations backed by customer/product DB gRPC services."""
 
-    SESSION_TOUCH_INTERVAL_SECONDS = 5.0
+    SESSION_TOUCH_INTERVAL_SECONDS = 30.0
 
     def __init__(
         self,

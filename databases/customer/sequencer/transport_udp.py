@@ -9,6 +9,8 @@ from typing import Callable
 
 from .messages import WireMessage, decode_message
 
+DEFAULT_SOCKET_TIMEOUT_SEC = 0.1
+
 
 class UdpTransport:
     def __init__(
@@ -16,12 +18,11 @@ class UdpTransport:
         *,
         bind_host: str,
         bind_port: int,
-        socket_timeout_sec: float,
         drop_probability: float,
     ):
         self._bind_host = bind_host
         self._bind_port = bind_port
-        self._socket_timeout_sec = socket_timeout_sec
+        self._socket_timeout_sec = DEFAULT_SOCKET_TIMEOUT_SEC
         self._drop_probability = drop_probability
 
         self._lock = threading.Lock()

@@ -6,6 +6,7 @@ write apply dispatch, and follower-to-leader read forwarding.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -154,6 +155,7 @@ class ProductRaftNode:
         apply_fn: Callable[[dict[str, Any]], dict[str, Any]],
     ):
         self.config = config
+        self._log = logging.getLogger(__name__)
         self._sm = ProductRaftStateMachine(
             self_addr=config.self_addr,
             partner_addrs=config.partner_addrs,
@@ -162,6 +164,7 @@ class ProductRaftNode:
             journal_file=config.journal_file,
         )
         self.running = True
+        self._last_status_snapshot: tuple[bool, bool, str | None] | None = None
 
     def stop(self) -> None:
         self.running = False
@@ -184,6 +187,7 @@ class ProductRaftNode:
         if not self._wait_until_ready(self.config.command_timeout_sec):
             raise RaftError("RAFT_NOT_READY", "Raft node is not ready")
 
+        started_at = time.monotonic()
         try:
             result = self._sm.apply_payload(
                 payload,
@@ -203,6 +207,14 @@ class ProductRaftNode:
                 "Raft command returned no commit result",
                 grpc.StatusCode.UNAVAILABLE,
             )
+        duration_ms = (time.monotonic() - started_at) * 1000.0
+        if duration_ms >= 200.0:
+            self._log.warning(
+                "product-raft slow apply: self=%s command=%s duration_ms=%.1f",
+                self.config.self_addr,
+                payload.get("type", "<unknown>"),
+                duration_ms,
+            )
 
         if result.get("ok") is False:
             error = result.get("error") or {}
@@ -219,12 +231,54 @@ class ProductRaftNode:
 
         return result.get("value") or {}
 
+    def _log_status_change(self, *, ready: bool, has_quorum: bool, leader_addr: str | None) -> None:
+        snapshot = (ready, has_quorum, leader_addr)
+        previous = self._last_status_snapshot
+        if snapshot == previous:
+            return
+
+        role = "follower"
+        if leader_addr == self.config.self_addr:
+            role = "leader"
+        self._log.info(
+            "product-raft status: self=%s role=%s leader=%s ready=%s quorum=%s",
+            self.config.self_addr,
+            role,
+            leader_addr,
+            ready,
+            has_quorum,
+        )
+        if previous is not None:
+            if previous[1] and not has_quorum:
+                self._log.warning(
+                    "product-raft quorum lost: self=%s leader=%s",
+                    self.config.self_addr,
+                    leader_addr,
+                )
+            if not previous[1] and has_quorum:
+                self._log.info(
+                    "product-raft quorum restored: self=%s leader=%s",
+                    self.config.self_addr,
+                    leader_addr,
+                )
+            if previous[2] != leader_addr:
+                self._log.info(
+                    "product-raft leader changed: self=%s old=%s new=%s",
+                    self.config.self_addr,
+                    previous[2],
+                    leader_addr,
+                )
+        self._last_status_snapshot = snapshot
+
     def _read_status(self) -> tuple[str, str | None, bool]:
         if not self.running:
+            self._log_status_change(ready=False, has_quorum=False, leader_addr=None)
             return self.config.self_addr, None, False
         try:
+            ready = self._sm.isReady()
             raw = self._sm.getStatus()
         except Exception:
+            self._log_status_change(ready=False, has_quorum=False, leader_addr=None)
             return self.config.self_addr, None, False
 
         self_node = raw.get("self")
@@ -232,6 +286,11 @@ class ProductRaftNode:
         self_addr = self.config.self_addr if self_node is None else self_node.id
         leader_addr = None if leader_node is None else leader_node.id
         has_quorum = bool(raw.get("has_quorum"))
+        self._log_status_change(
+            ready=ready,
+            has_quorum=has_quorum,
+            leader_addr=leader_addr,
+        )
         return self_addr, leader_addr, has_quorum
 
     def get_leader_grpc_target_or_error(self, *, already_forwarded: bool = False) -> str | None:
@@ -270,7 +329,6 @@ class ProductRaftNode:
             "Leader gRPC address is not configured for read forwarding",
             grpc.StatusCode.UNAVAILABLE,
         )
-
 
 class ProductReadForwarder:
     def __init__(self, raft_node: ProductRaftNode):
