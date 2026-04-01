@@ -6,8 +6,6 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.129.0",
-    "google-auth>=2.48.0",
-    "google-cloud-compute>=1.43.0",
     "httpx>=0.28.1",
     "protobuf>=6.33.5",
     "pydantic>=2.12.5",
@@ -17,4 +15,11 @@ dependencies = [
     "sqlalchemy>=2.0.46",
     "grpcio>=1.78.1",
     "grpcio-tools>=1.78.0",
+]
+
+[dependency-groups]
+dev = [
+    "google-auth>=2.48.0",
+    "google-cloud-compute>=1.43.0",
+    "google-cloud-container>=2.59.0",
 ]

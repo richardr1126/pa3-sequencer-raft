@@ -18,10 +18,10 @@ services:
         - python
         - -c
         - import socket; s=socket.create_connection(('127.0.0.1',8001),2); s.close()
-      interval: 5s
-      timeout: 3s
+      interval: 30s
+      timeout: 5s
       retries: 20
-      start_period: 5s
+      start_period: 15s
 
   db-product:
     build:
@@ -42,10 +42,10 @@ services:
         - python
         - -c
         - import socket; s=socket.create_connection(('127.0.0.1',8002),2); s.close()
-      interval: 5s
-      timeout: 3s
+      interval: 30s
+      timeout: 5s
       retries: 20
-      start_period: 5s
+      start_period: 15s
 
   backend-financial:
     build:
@@ -65,11 +65,11 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/?wsdl', timeout=2)
-      interval: 5s
-      timeout: 3s
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/healthz', timeout=2)
+      interval: 30s
+      timeout: 5s
       retries: 20
-      start_period: 5s
+      start_period: 15s
 
   backend-sellers:
     build:
@@ -102,11 +102,11 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/openapi.json', timeout=2)
-      interval: 5s
-      timeout: 3s
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz', timeout=2)
+      interval: 30s
+      timeout: 5s
       retries: 20
-      start_period: 5s
+      start_period: 15s
 
   backend-buyers:
     build:
@@ -143,11 +143,11 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/openapi.json', timeout=2)
-      interval: 5s
-      timeout: 3s
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz', timeout=2)
+      interval: 30s
+      timeout: 5s
       retries: 20
-      start_period: 5s
+      start_period: 15s
 
   client-sellers:
     build:

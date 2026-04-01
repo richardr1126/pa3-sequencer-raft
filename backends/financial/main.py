@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 def create_app() -> FastAPI:
     app = FastAPI(title="Financial SOAP Service")
 
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok", "service": "backend-financial"}
+
     @app.get("/")
     async def get_root(request: Request) -> Response:
         # SOAP clients fetch service metadata via `?wsdl`; plain `/` is not a valid endpoint.

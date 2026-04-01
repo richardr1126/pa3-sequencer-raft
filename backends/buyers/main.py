@@ -259,6 +259,10 @@ def create_app(
             security_code=body.security_code,
         )
 
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok", "service": "backend-buyers"}
+
     return app
 
 

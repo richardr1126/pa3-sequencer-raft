@@ -203,6 +203,10 @@ def create_app(
     ) -> dict[str, Any]:
         return service.display_items(seller=context["seller"])
 
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok", "service": "backend-sellers"}
+
     return app
 
 
