@@ -54,7 +54,7 @@ dbCustomer:
     - name: CUSTOMER_SEQUENCER_COMMAND_TIMEOUT_SEC
       value: "30.0"
     - name: CUSTOMER_SEQUENCER_RETRY_SEC
-      value: "0.05"
+      value: "0.1"
     - name: CUSTOMER_SEQUENCER_DROP_PROB
       value: "0.0"
   persistence:
@@ -163,6 +163,12 @@ backendSellers:
   service:
     type: ClusterIP
     port: 8003
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+    tls: []
   args:
     customer-db-host: marketplace-db-customer-0.marketplace-db-customer,marketplace-db-customer-1.marketplace-db-customer,marketplace-db-customer-2.marketplace-db-customer,marketplace-db-customer-3.marketplace-db-customer,marketplace-db-customer-4.marketplace-db-customer
     customer-db-port: 8001
@@ -198,6 +204,12 @@ backendBuyers:
   service:
     type: ClusterIP
     port: 8004
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+    tls: []
   args:
     customer-db-host: marketplace-db-customer-0.marketplace-db-customer,marketplace-db-customer-1.marketplace-db-customer,marketplace-db-customer-2.marketplace-db-customer,marketplace-db-customer-3.marketplace-db-customer,marketplace-db-customer-4.marketplace-db-customer
     customer-db-port: 8001

@@ -8,6 +8,8 @@ from typing import Callable
 from .messages import WireMessage, decode_message
 
 DEFAULT_SOCKET_TIMEOUT_SEC = 0.1
+DEFAULT_SOCKET_RCVBUF_BYTES = 4 * 1024 * 1024
+DEFAULT_SOCKET_SNDBUF_BYTES = 4 * 1024 * 1024
 
 
 class UdpTransport:
@@ -21,6 +23,8 @@ class UdpTransport:
         self._bind_host = bind_host
         self._bind_port = bind_port
         self._socket_timeout_sec = DEFAULT_SOCKET_TIMEOUT_SEC
+        self._socket_rcvbuf_bytes = DEFAULT_SOCKET_RCVBUF_BYTES
+        self._socket_sndbuf_bytes = DEFAULT_SOCKET_SNDBUF_BYTES
         self._drop_probability = drop_probability
 
         self._lock = threading.Lock()
@@ -35,6 +39,17 @@ class UdpTransport:
                 return
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(self._socket_timeout_sec)
+            # Raise UDP socket buffers to reduce packet loss under bursty traffic.
+            try:
+                sock.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_RCVBUF, self._socket_rcvbuf_bytes
+                )
+                sock.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_SNDBUF, self._socket_sndbuf_bytes
+                )
+            except OSError:
+                # Best effort only; continue with OS defaults if not permitted.
+                pass
             sock.bind((self._bind_host, self._bind_port))
             self._sock = sock
             self._running = True

@@ -1,0 +1,45 @@
+{{- if and .Values.backendSellers.enabled .Values.backendSellers.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marketplace-backend-sellers
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: backend-sellers
+  {{- with .Values.backendSellers.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.backendSellers.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.backendSellers.ingress.tls }}
+  tls:
+    {{- range .Values.backendSellers.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.backendSellers.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            {{- with .pathType }}
+            pathType: {{ . }}
+            {{- end }}
+            backend:
+              service:
+                name: marketplace-backend-sellers
+                port:
+                  number: {{ $.Values.backendSellers.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

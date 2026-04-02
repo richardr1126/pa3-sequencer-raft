@@ -78,15 +78,13 @@ This project implements a 3-tier architecture for an online marketplace platform
 
 Use this path for the fastest full-stack local run (3x Customer DB sequencer replicas + 3x Product DB Raft replicas + both backends + financial service).
 
-### 1) Build and start all services
-
-From repo root:
+Build and start all services from repo root:
 
 ```bash
 docker compose up --build
 ```
 
-### 2) Run benchmark/CLIs against compose
+Run benchmark/CLIs against compose:
 
 ```bash
 uv run python benchmark.py --scenario 1
@@ -94,7 +92,7 @@ uv run python clients/sellers/cli.py --help
 uv run python clients/buyers/cli.py --help
 ```
 
-### 3) Stop (and optionally reset volumes)
+Stop (and optionally reset volumes):
 
 ```bash
 docker compose down
@@ -102,9 +100,10 @@ docker compose down
 docker compose down -v
 ```
 
-## Environment Setup
+## Python Environment Setup
 
-This assignment targets **Python 3.13** and was not tested on other versions. Dependencies are managed with `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`). 
+- This assignment targets **Python 3.13** and was not tested on other versions.
+- Dependencies are managed with `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`). 
 
 ### 1) Install dependencies
 
@@ -116,22 +115,7 @@ uv sync --all-groups
 
 After syncing, you can either run commands via `uv run ...` or activate the virtualenv (`source .venv/bin/activate`) and use `python ...`.
 
-### 2) Run benchmark/CLIs
-
-After starting your backend and DB services (either via local terminals, Docker Compose, or GKE), you can run the benchmark script or client CLIs against the appropriate host/ports.
-
-```bash
-# All scenarios (default 10 runs each)
-uv run python benchmark.py
-
-# Scenario 3 only
-uv run python benchmark.py --scenario 3
-
-# Scenario 2 with a compose failure preset (kills backend sellers+buyers once per run)
-uv run python benchmark.py --scenario 2 --failure-mode backend-sellers-buyers --failure-platform compose --failure-delay-sec 5
-```
-
-### Benchmark Failure Injection Flags
+## Benchmark Details
 
 - `--failure-mode`: `none` (default), `backend-sellers-buyers`, `product-follower`, `product-leader`
 - `--failure-platform`: `compose` (default) or `k8s` (preset commands enabled for marketplace chart names in namespace `default`)
@@ -142,10 +126,7 @@ Examples:
 
 ```bash
 # Kill one product follower in compose once per run
-uv run python benchmark.py --scenario 1 --failure-mode product-follower
-
-# Explicit command override (works for any environment)
-uv run python benchmark.py --scenario 1 --failure-command "docker compose kill db-product-1-1"
+uv run python benchmark.py --scenario 1 --failure-mode product-follower --failure-platform compose
 
 # Kill one backend-sellers and one backend-buyers pod in k8s once per run
 uv run python benchmark.py --scenario 1 --failure-mode backend-sellers-buyers --failure-platform k8s
@@ -155,7 +136,11 @@ uv run python benchmark.py --scenario 1 --failure-mode product-follower --failur
 uv run python benchmark.py --scenario 1 --failure-mode product-leader --failure-platform k8s
 ```
 
-### Full GKE Automation (Create Cluster + Run All PA3 Cases)
+## GCP: GKE Cluster Deployment
+
+The detailed GKE setup and operations guide lives in:
+
+- [`k8s/README.md`](/Users/richardroberson/Documents/classes/distributed-systems/pa3-sequencer-raft/k8s/README.md)
 
 Use the root script to automate:
 
@@ -174,7 +159,7 @@ Use the root script to automate:
 
 The script writes per-case logs and a `summary.tsv` under `benchmark-results/<timestamp>/`.
 `run-pa3-benchmarks-gke.sh` is intentionally fixed and deterministic:
-- Uses `pa3-cloud` in `us-central1-b`
+- Uses `pa3-cloud` in `us-central1-f`
 - Runs `10` iterations per case with `1000` ops/client
 - Deletes and recreates marketplace state for every case
 - Deletes the cluster at the end
@@ -295,25 +280,3 @@ Generated Python stubs are stored in `common/grpc_gen/` and are used by:
 
 - DB servers (`databases/customer/main.py`, `databases/product/main.py`) as gRPC servicers
 - Backend DB clients (`backends/common/db_client.py`) as typed stubs
-
-## GCP: GKE Cluster Deployment
-
-The detailed GKE setup and operations guide lives in:
-
-- [`k8s/README.md`](/Users/richardroberson/Documents/classes/distributed-systems/pa3-sequencer-raft/k8s/README.md)
-
-Quick entry points:
-
-```bash
-# create cluster
-cd k8s
-uv run python gke-cluster.py create
-
-# install cluster apps + marketplace chart
-cd helm
-./install-apps.sh
-
-# run full benchmark automation from repo root
-cd ..
-./run-pa3-benchmarks-gke.sh
-```

@@ -1,0 +1,79 @@
+--------------------------------------------------
+Online Marketplace Benchmark
+--------------------------------------------------
+Sellers server: marketplace-sellers.richardr.dev:80
+Buyers server: marketplace-buyers.richardr.dev:80
+Operations per client: 1000
+Runs per scenario: 10
+Max workers: auto
+Failure mode: none (k8s)
+--------------------------------------------------
+
+Scenario 1: 1 seller(s) + 1 buyer(s)
+--------------------------------------------------
+  Run 1: ops=2000/2000, latency=134.58ms (p50=110.19ms, p99=297.01ms), throughput=13.6 ops/s, duration=147.53s
+    Client Function Latency:
+      AddItemToCart: 153.26 ms (samples=148)
+      ChangeItemPrice: 234.15 ms (samples=150)
+      DisplayCart: 136.65 ms (samples=206)
+      DisplayItemsForSale: 107.79 ms (samples=400)
+      GetBuyerPurchases: 132.43 ms (samples=50)
+      GetSellerRating: 101.34 ms (samples=300)
+      RemoveItemFromCart: 147.07 ms (samples=94)
+      SearchItemsForSale: 107.49 ms (samples=502)
+      UpdateUnitsForSale: 235.21 ms (samples=150)
+  Run 2: ops=2000/2000, latency=139.67ms (p50=114.43ms, p99=306.98ms), throughput=13.3 ops/s, duration=150.80s
+    Client Function Latency:
+      AddItemToCart: 165.01 ms (samples=148)
+      ChangeItemPrice: 242.57 ms (samples=150)
+      DisplayCart: 138.29 ms (samples=201)
+      DisplayItemsForSale: 112.43 ms (samples=400)
+      GetBuyerPurchases: 130.65 ms (samples=50)
+      GetSellerRating: 106.21 ms (samples=300)
+      RemoveItemFromCart: 159.46 ms (samples=99)
+      SearchItemsForSale: 110.10 ms (samples=502)
+      UpdateUnitsForSale: 242.05 ms (samples=150)
+  Run 3: ops=2000/2000, latency=146.55ms (p50=119.45ms, p99=331.65ms), throughput=12.8 ops/s, duration=155.94s
+    Client Function Latency:
+      AddItemToCart: 178.70 ms (samples=150)
+      ChangeItemPrice: 247.52 ms (samples=150)
+      DisplayCart: 151.77 ms (samples=205)
+      DisplayItemsForSale: 117.71 ms (samples=400)
+      GetBuyerPurchases: 139.72 ms (samples=50)
+      GetSellerRating: 110.68 ms (samples=300)
+      RemoveItemFromCart: 165.96 ms (samples=95)
+      SearchItemsForSale: 115.54 ms (samples=500)
+      UpdateUnitsForSale: 248.35 ms (samples=150)
+  Run 4: ops=2000/2000, latency=229.18ms (p50=172.43ms, p99=827.44ms), throughput=8.4 ops/s, duration=238.56s
+    Client Function Latency:
+      AddItemToCart: 361.22 ms (samples=149)
+      ChangeItemPrice: 313.85 ms (samples=150)
+      DisplayCart: 276.97 ms (samples=201)
+      DisplayItemsForSale: 180.36 ms (samples=400)
+      GetBuyerPurchases: 249.96 ms (samples=50)
+      GetSellerRating: 183.70 ms (samples=300)
+      RemoveItemFromCart: 344.56 ms (samples=99)
+      SearchItemsForSale: 162.64 ms (samples=501)
+      UpdateUnitsForSale: 309.60 ms (samples=150)
+  Run 5: ops=2000/2000, latency=317.04ms (p50=277.63ms, p99=1000.05ms), throughput=5.7 ops/s, duration=350.81s
+    Client Function Latency:
+      AddItemToCart: 534.83 ms (samples=147)
+      ChangeItemPrice: 370.97 ms (samples=150)
+      DisplayCart: 404.33 ms (samples=206)
+      DisplayItemsForSale: 247.41 ms (samples=400)
+      GetBuyerPurchases: 364.80 ms (samples=50)
+      GetSellerRating: 234.53 ms (samples=300)
+      RemoveItemFromCart: 546.89 ms (samples=94)
+      SearchItemsForSale: 234.66 ms (samples=503)
+      UpdateUnitsForSale: 396.78 ms (samples=150)
+  Run 6: ops=2000/2000, latency=418.47ms (p50=376.88ms, p99=1229.14ms), throughput=4.2 ops/s, duration=473.86s
+    Client Function Latency:
+      AddItemToCart: 746.07 ms (samples=143)
+      ChangeItemPrice: 455.51 ms (samples=150)
+      DisplayCart: 517.46 ms (samples=213)
+      DisplayItemsForSale: 333.41 ms (samples=400)
+      GetBuyerPurchases: 542.65 ms (samples=50)
+      GetSellerRating: 315.25 ms (samples=300)
+      RemoveItemFromCart: 764.81 ms (samples=87)
+      SearchItemsForSale: 318.77 ms (samples=507)
+      UpdateUnitsForSale: 456.53 ms (samples=150)

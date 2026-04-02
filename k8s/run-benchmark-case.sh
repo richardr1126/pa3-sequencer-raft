@@ -14,35 +14,51 @@ SCENARIO="$1"
 FAILURE_MODE="$2"
 
 CASE_NAME="scenario${SCENARIO}__${FAILURE_MODE}"
+SELLERS_HOST="${SELLERS_HOST:-marketplace-sellers.richardr.dev}"
+BUYERS_HOST="${BUYERS_HOST:-marketplace-buyers.richardr.dev}"
+SELLERS_PORT="${SELLERS_PORT:-80}"
+BUYERS_PORT="${BUYERS_PORT:-80}"
 
 ./k8s/helm/reinstall-marketplace.sh
 
 # Give customer sequencer cluster time to converge before benchmark traffic starts.
 sleep 20
 
-kubectl -n default port-forward svc/marketplace-backend-sellers 8003:8003 >/dev/null 2>&1 &
-PF_SELLERS_PID=$!
-kubectl -n default port-forward svc/marketplace-backend-buyers 8004:8004 >/dev/null 2>&1 &
-PF_BUYERS_PID=$!
-cleanup_port_forward() {
-  kill "${PF_SELLERS_PID}" "${PF_BUYERS_PID}" >/dev/null 2>&1 || true
-  wait "${PF_SELLERS_PID}" "${PF_BUYERS_PID}" 2>/dev/null || true
-}
-trap cleanup_port_forward EXIT
+wait_for_ingress() {
+  local name="$1"
+  local url="$2"
+  local max_attempts=120
+  local attempt=1
 
-sleep 8
+  while [[ "${attempt}" -le "${max_attempts}" ]]; do
+    if curl -fsS --max-time 5 "${url}" >/dev/null; then
+      echo "${name} ingress is ready: ${url}"
+      return 0
+    fi
+    sleep 5
+    attempt=$((attempt + 1))
+  done
+
+  echo "Timed out waiting for ${name} ingress: ${url}" >&2
+  return 1
+}
+
+wait_for_ingress "sellers" "http://${SELLERS_HOST}:${SELLERS_PORT}/healthz"
+wait_for_ingress "buyers" "http://${BUYERS_HOST}:${BUYERS_PORT}/healthz"
 
 set +e
 uv run python benchmark.py \
   --scenario "${SCENARIO}" \
   --runs 10 \
   --ops-per-client 1000 \
+  --sellers-host "${SELLERS_HOST}" \
+  --sellers-port "${SELLERS_PORT}" \
+  --buyers-host "${BUYERS_HOST}" \
+  --buyers-port "${BUYERS_PORT}" \
   --failure-mode "${FAILURE_MODE}" \
   --failure-platform k8s \
   --case-name "${CASE_NAME}"
 RC=$?
 set -e
 
-trap - EXIT
-cleanup_port_forward
 exit "${RC}"

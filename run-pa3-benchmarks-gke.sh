@@ -6,9 +6,10 @@ cd "$(dirname "$0")"
 BENCHMARK_RUN_ID="$(date +%Y%m%d-%H%M%S)"
 export BENCHMARK_RUN_ID
 
-uv run python k8s/gke-cluster.py create
+#uv run python k8s/gke-cluster.py create
 rm -rf ~/.kube/config
-gcloud container clusters get-credentials pa3-cloud --zone us-central1-b
+gcloud container clusters get-credentials pa3-cloud --zone us-central1-f
+./k8s/helm/install-apps.sh
 ./k8s/run-benchmark-case.sh 1 none
 ./k8s/run-benchmark-case.sh 1 backend-sellers-buyers
 ./k8s/run-benchmark-case.sh 1 product-follower

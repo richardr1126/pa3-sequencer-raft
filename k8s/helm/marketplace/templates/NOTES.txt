@@ -9,7 +9,16 @@ DB StatefulSets:
 - marketplace-db-customer replicas: 5
 - marketplace-db-product replicas: 5
 
-Port forward examples:
-- kubectl -n {{ .Release.Namespace }} port-forward svc/marketplace-backend-sellers {{ .Values.backendSellers.service.port }}:{{ .Values.backendSellers.service.port }}
-- kubectl -n {{ .Release.Namespace }} port-forward svc/marketplace-backend-buyers {{ .Values.backendBuyers.service.port }}:{{ .Values.backendBuyers.service.port }}
-- kubectl -n {{ .Release.Namespace }} port-forward svc/marketplace-backend-financial {{ .Values.backendFinancial.service.port }}:{{ .Values.backendFinancial.service.port }}
+{{- if and .Values.backendSellers.enabled .Values.backendSellers.ingress.enabled }}
+Sellers ingress hosts:
+{{- range .Values.backendSellers.ingress.hosts }}
+- http://{{ .host }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.backendBuyers.enabled .Values.backendBuyers.ingress.enabled }}
+Buyers ingress hosts:
+{{- range .Values.backendBuyers.ingress.hosts }}
+- http://{{ .host }}
+{{- end }}
+{{- end }}

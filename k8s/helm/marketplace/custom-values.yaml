@@ -20,11 +20,33 @@ dbProduct:
     limits: {}
 
 backendSellers:
+  ingress:
+    enabled: true
+    className: traefik
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: marketplace-sellers.richardr.dev
+      external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+    hosts:
+      - host: marketplace-sellers.richardr.dev
+        paths:
+          - path: /
+            pathType: Prefix
   resources:
     requests: {}
     limits: {}
 
 backendBuyers:
+  ingress:
+    enabled: true
+    className: traefik
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: marketplace-buyers.richardr.dev
+      external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+    hosts:
+      - host: marketplace-buyers.richardr.dev
+        paths:
+          - path: /
+            pathType: Prefix
   resources:
     requests: {}
     limits: {}

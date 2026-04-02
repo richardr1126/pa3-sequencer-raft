@@ -5,21 +5,20 @@ This folder is a simplified GKE setup for this project's services.
 ## Included
 
 - `gke-cluster.py`: small cluster lifecycle manager (`create`, `list`, `scale`, `delete`)
-- `helm/install-apps.sh`: installs only the Marketplace chart (`helm/marketplace`)
+- `helm/install-apps.sh`: installs Traefik + ExternalDNS + Marketplace chart (`helm/marketplace`)
 
 CockroachDB and other task-specific components are intentionally not included.
 
 ## Node Pool Strategy
 
-The cluster uses two fixed generic node pools chosen for lower cost.
+The cluster uses two fixed generic node pools.
 
 Default pools:
 
-- `pool-1`: `e2-small`
-- `pool-2`: `n2d-highcpu-2`
+- `pool-1`: `n4d-highcpu-2`
+- `pool-2`: `c2d-highcpu-2`
 
 Default total node count is `19`, using a fixed pool split of `10/9`, matching your target service replicas.
-If quota changes later, use `e2-medium` manually as the fallback option.
 
 Your service target is `19` total replicas, so `19` nodes gives near one-pod-per-node placement.
 
@@ -54,13 +53,13 @@ Create uses fixed node pool sizes from the script (`10/9`).
 ## Connect kubectl
 
 ```bash
-gcloud container clusters get-credentials pa3-cloud --zone us-central1-b --project YOUR_PROJECT_ID
+gcloud container clusters get-credentials pa3-cloud --zone us-central1-f --project YOUR_PROJECT_ID
 kubectl get nodes
 ```
 
 ## Install Cluster Apps (Helm)
 
-Install marketplace chart:
+Install Traefik, ExternalDNS, and marketplace chart:
 
 ```bash
 cd helm
@@ -139,7 +138,9 @@ From repo root, run:
 
 This script creates/connects the cluster, runs `helm/install-apps.sh`,
 uses `helm/reinstall-marketplace.sh` between benchmark cases, and executes all
-PA3 scenario/failure combinations with logs under
+PA3 scenario/failure combinations against ingress hosts
+`marketplace-sellers.richardr.dev` and `marketplace-buyers.richardr.dev`
+with logs under
 `benchmark-results/<timestamp>/`.
 
 This script is intentionally fixed/deterministic and tears down the cluster at completion by default.
