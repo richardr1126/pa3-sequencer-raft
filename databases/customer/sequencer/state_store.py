@@ -1,7 +1,5 @@
 """Shared in-memory protocol state for rotating sequencer replication."""
 
-from __future__ import annotations
-
 import threading
 from dataclasses import dataclass, field
 from typing import Any

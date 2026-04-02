@@ -9,12 +9,6 @@ This folder is a simplified GKE setup for this project's services.
   - Cloudflare token secret
   - ExternalDNS
   - Traefik (Ingress controller with LoadBalancer service)
-- `helm/marketplace/marketplace.yaml`: Kubernetes resources for:
-  - `db-customer` (5 replicas)
-  - `db-product` (5 replicas)
-  - `backend-sellers` (4 replicas)
-  - `backend-buyers` (4 replicas)
-  - `backend-financial` (1 replica)
 
 CockroachDB and other task-specific components are intentionally not included.
 
@@ -107,11 +101,10 @@ docker push $REGISTRY/pa3-backend-sellers:$TAG
 docker push $REGISTRY/pa3-backend-buyers:$TAG
 ```
 
-Update image names and ingress hosts in `helm/marketplace/marketplace.yaml`, then deploy:
+Apply your workload manifests after image push (example):
 
 ```bash
-cd helm
-./marketplace/install.sh
+kubectl apply -f <your-manifests-dir>/
 kubectl -n pa3 get pods -o wide
 kubectl -n pa3 get svc
 kubectl -n pa3 get ingress

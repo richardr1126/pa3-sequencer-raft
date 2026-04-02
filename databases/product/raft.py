@@ -1,13 +1,12 @@
 """Raft runtime helpers for Product DB.
 
 This module owns PySyncObj integration, raft env/config parsing,
-write apply dispatch, and follower-to-leader read forwarding.
+and write apply dispatch.
 """
-
-from __future__ import annotations
 
 import logging
 import os
+import pickle
 import threading
 import time
 from dataclasses import dataclass
@@ -19,15 +18,12 @@ from pysyncobj import SyncObj, SyncObjConf, replicated
 
 from databases.product.db import default_persistence_root, persistence_paths_for_raft_node
 
-FORWARDED_READ_HEADER = "x-productdb-forwarded-read"
-
 
 @dataclass(slots=True)
 class ProductRaftConfig:
     self_addr: str
     partner_addrs: list[str]
     command_timeout_sec: float = 3.0
-    grpc_port_offset: int = 300
     full_dump_file: str | None = None
     journal_file: str | None = None
 
@@ -53,23 +49,12 @@ def parse_raft_partner_addrs(raw: str, self_addr: str) -> list[str]:
     ]
 
 
-def derive_grpc_target_from_raft_addr(raft_addr: str, port_offset: int) -> str | None:
-    addr = raft_addr.strip()
-    if ":" not in addr:
-        return None
-    host, port_raw = addr.rsplit(":", 1)
-    if not port_raw.isdigit():
-        return None
-    return f"{host}:{int(port_raw) + port_offset}"
-
-
 def build_raft_config_from_env() -> tuple[ProductRaftConfig, Path]:
     raft_self_addr = os.getenv("RAFT_SELF_ADDR", "127.0.0.1:11000").strip()
     raft_partner_addrs = parse_raft_partner_addrs(
         os.getenv("RAFT_PARTNER_ADDRS", ""),
         raft_self_addr,
     )
-    grpc_port_offset = int(os.getenv("RAFT_GRPC_PORT_OFFSET", "300"))
     command_timeout_sec = float(os.getenv("RAFT_COMMAND_TIMEOUT_SEC", "3.0"))
     persistence_root = Path(os.getenv("PERSISTENCE_DIR", default_persistence_root()))
     sqlite_path, raft_full_dump_file, raft_journal_file = persistence_paths_for_raft_node(
@@ -85,7 +70,6 @@ def build_raft_config_from_env() -> tuple[ProductRaftConfig, Path]:
             self_addr=raft_self_addr,
             partner_addrs=raft_partner_addrs,
             command_timeout_sec=command_timeout_sec,
-            grpc_port_offset=grpc_port_offset,
             full_dump_file=str(raft_full_dump_file),
             journal_file=str(raft_journal_file),
         ),
@@ -99,44 +83,27 @@ class ProductRaftStateMachine(SyncObj):
         *,
         self_addr: str,
         partner_addrs: list[str],
-        apply_fn: Callable[[dict[str, Any]], dict[str, Any]],
+        apply_committed_write_fn: Callable[[dict[str, Any], int], dict[str, Any]],
         full_dump_file: str | None,
         journal_file: str | None,
     ):
         self._lock = threading.RLock()
-        self._apply_fn = apply_fn
+        self._apply_fn = apply_committed_write_fn
 
         conf = SyncObjConf(
             dynamicMembershipChange=False,
             fullDumpFile=full_dump_file,
             journalFile=journal_file,
+            appendEntriesPeriod=0.02,
         )
         super().__init__(self_addr, partner_addrs, conf=conf)
 
     @replicated
-    def apply_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def commit_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             try:
-                value = self._apply_fn(payload)
-                return {"ok": True, "value": value}
-            except RaftError as exc:
-                return {
-                    "ok": False,
-                    "error": {
-                        "code": exc.code,
-                        "message": exc.message,
-                        "grpc_status": exc.grpc_status.name,
-                    },
-                }
-            except ValueError as exc:
-                return {
-                    "ok": False,
-                    "error": {
-                        "code": "INVALID_ARGUMENT",
-                        "message": str(exc),
-                        "grpc_status": grpc.StatusCode.INVALID_ARGUMENT.name,
-                    },
-                }
+                raft_index = int(self.raftLastApplied) + 1
+                return self._apply_fn(payload, raft_index)
             except Exception as exc:
                 return {
                     "ok": False,
@@ -147,24 +114,59 @@ class ProductRaftStateMachine(SyncObj):
                     },
                 }
 
+    @staticmethod
+    def _decode_regular_payload(command: bytes) -> dict[str, Any] | None:
+        if not command or command[0] != 0:
+            return None
+        decoded = pickle.loads(command[1:])
+        if not isinstance(decoded, tuple) or len(decoded) < 2:
+            return None
+        args = decoded[1]
+        if not isinstance(args, tuple) or not args:
+            return None
+        payload = args[0]
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def replay_committed_writes(self, last_applied_sqlite: int) -> int:
+        with self._lock:
+            first_log_index = int(self._SyncObj__raftLog[0][1])  # type: ignore[attr-defined]
+            start_index = max(int(last_applied_sqlite) + 1, first_log_index)
+            commit_index = int(self.raftCommitIndex)
+            if start_index > commit_index:
+                return 0
+
+            replayed = 0
+            entries = self._SyncObj__getEntries(  # type: ignore[attr-defined]
+                start_index,
+                commit_index - start_index + 1,
+            )
+            for command, raft_index, _term in entries:
+                payload = self._decode_regular_payload(command)
+                if payload is None:
+                    continue
+                self._apply_fn(payload, int(raft_index))
+                replayed += 1
+            return replayed
+
 
 class ProductRaftNode:
     def __init__(
         self,
         config: ProductRaftConfig,
-        apply_fn: Callable[[dict[str, Any]], dict[str, Any]],
+        apply_committed_write_fn: Callable[[dict[str, Any], int], dict[str, Any]],
     ):
         self.config = config
         self._log = logging.getLogger(__name__)
         self._sm = ProductRaftStateMachine(
             self_addr=config.self_addr,
             partner_addrs=config.partner_addrs,
-            apply_fn=apply_fn,
+            apply_committed_write_fn=apply_committed_write_fn,
             full_dump_file=config.full_dump_file,
             journal_file=config.journal_file,
         )
         self.running = True
-        self._last_status_snapshot: tuple[bool, bool, str | None] | None = None
 
     def stop(self) -> None:
         self.running = False
@@ -181,7 +183,7 @@ class ProductRaftNode:
             time.sleep(0.01)
         return self._sm.isReady()
 
-    def apply(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def commit_write(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.running:
             raise RaftError("RAFT_STOPPED", "Raft node is stopped")
         if not self._wait_until_ready(self.config.command_timeout_sec):
@@ -189,7 +191,7 @@ class ProductRaftNode:
 
         started_at = time.monotonic()
         try:
-            result = self._sm.apply_payload(
+            result = self._sm.commit_payload(
                 payload,
                 sync=True,
                 timeout=self.config.command_timeout_sec,
@@ -210,7 +212,7 @@ class ProductRaftNode:
         duration_ms = (time.monotonic() - started_at) * 1000.0
         if duration_ms >= 200.0:
             self._log.warning(
-                "product-raft slow apply: self=%s command=%s duration_ms=%.1f",
+                "product-raft slow commit: self=%s command=%s duration_ms=%.1f",
                 self.config.self_addr,
                 payload.get("type", "<unknown>"),
                 duration_ms,
@@ -225,168 +227,26 @@ class ProductRaftNode:
                 grpc_status = grpc.StatusCode.INTERNAL
             raise RaftError(
                 code=str(error.get("code") or "RAFT_APPLY_ERROR"),
-                message=str(error.get("message") or "Raft apply failed"),
+                message=str(error.get("message") or "Raft commit failed"),
                 grpc_status=grpc_status,
             )
 
         return result.get("value") or {}
 
-    def _log_status_change(self, *, ready: bool, has_quorum: bool, leader_addr: str | None) -> None:
-        snapshot = (ready, has_quorum, leader_addr)
-        previous = self._last_status_snapshot
-        if snapshot == previous:
-            return
-
-        role = "follower"
-        if leader_addr == self.config.self_addr:
-            role = "leader"
-        self._log.info(
-            "product-raft status: self=%s role=%s leader=%s ready=%s quorum=%s",
-            self.config.self_addr,
-            role,
-            leader_addr,
-            ready,
-            has_quorum,
-        )
-        if previous is not None:
-            if previous[1] and not has_quorum:
-                self._log.warning(
-                    "product-raft quorum lost: self=%s leader=%s",
-                    self.config.self_addr,
-                    leader_addr,
-                )
-            if not previous[1] and has_quorum:
-                self._log.info(
-                    "product-raft quorum restored: self=%s leader=%s",
-                    self.config.self_addr,
-                    leader_addr,
-                )
-            if previous[2] != leader_addr:
-                self._log.info(
-                    "product-raft leader changed: self=%s old=%s new=%s",
-                    self.config.self_addr,
-                    previous[2],
-                    leader_addr,
-                )
-        self._last_status_snapshot = snapshot
-
-    def _read_status(self) -> tuple[str, str | None, bool]:
-        if not self.running:
-            self._log_status_change(ready=False, has_quorum=False, leader_addr=None)
-            return self.config.self_addr, None, False
-        try:
-            ready = self._sm.isReady()
-            raw = self._sm.getStatus()
-        except Exception:
-            self._log_status_change(ready=False, has_quorum=False, leader_addr=None)
-            return self.config.self_addr, None, False
-
-        self_node = raw.get("self")
-        leader_node = raw.get("leader")
-        self_addr = self.config.self_addr if self_node is None else self_node.id
-        leader_addr = None if leader_node is None else leader_node.id
-        has_quorum = bool(raw.get("has_quorum"))
-        self._log_status_change(
-            ready=ready,
-            has_quorum=has_quorum,
-            leader_addr=leader_addr,
-        )
-        return self_addr, leader_addr, has_quorum
-
-    def get_leader_grpc_target_or_error(self, *, already_forwarded: bool = False) -> str | None:
-        if not self.is_ready():
-            raise RaftError("RAFT_NOT_READY", "Raft node is not ready")
-
-        self_addr, leader_addr, has_quorum = self._read_status()
-        if not has_quorum:
+    def replay_committed_writes(self, last_applied_sqlite: int) -> int:
+        replay_timeout_sec = max(self.config.command_timeout_sec, 30.0)
+        if not self._wait_until_ready(replay_timeout_sec):
             raise RaftError(
-                "RAFT_NO_QUORUM",
-                "Raft cluster has no quorum for leader-consistent reads",
+                "RAFT_NOT_READY",
+                "Raft node is not ready for startup sqlite replay",
                 grpc.StatusCode.UNAVAILABLE,
             )
-
-        if leader_addr is not None and leader_addr == self_addr:
-            return None
-
-        if already_forwarded:
-            raise RaftError(
-                "LEADER_FORWARD_LOOP",
-                "Forwarded read landed on follower; leader changed or mapping is stale",
-                grpc.StatusCode.UNAVAILABLE,
+        replayed = self._sm.replay_committed_writes(last_applied_sqlite)
+        if replayed > 0:
+            self._log.info(
+                "product-raft startup replay: self=%s from_index=%s replayed=%s",
+                self.config.self_addr,
+                last_applied_sqlite,
+                replayed,
             )
-
-        target = None
-        if leader_addr:
-            target = derive_grpc_target_from_raft_addr(
-                leader_addr,
-                port_offset=self.config.grpc_port_offset,
-            )
-        if target:
-            return target
-
-        raise RaftError(
-            "LEADER_GRPC_UNKNOWN",
-            "Leader gRPC address is not configured for read forwarding",
-            grpc.StatusCode.UNAVAILABLE,
-        )
-
-class ProductReadForwarder:
-    def __init__(self, raft_node: ProductRaftNode):
-        self.raft = raft_node
-        self._lock = threading.Lock()
-        self._channels: dict[str, grpc.Channel] = {}
-        self._stubs: dict[str, Any] = {}
-
-    def close(self) -> None:
-        with self._lock:
-            for channel in self._channels.values():
-                channel.close()
-            self._channels.clear()
-            self._stubs.clear()
-
-    @staticmethod
-    def _is_forwarded_request(context: grpc.ServicerContext) -> bool:
-        for metadata in context.invocation_metadata():
-            if metadata.key.lower() == FORWARDED_READ_HEADER and metadata.value == "1":
-                return True
-        return False
-
-    def _get_stub(self, target: str):
-        from common.grpc_gen import product_db_pb2_grpc
-
-        with self._lock:
-            stub = self._stubs.get(target)
-            if stub is not None:
-                return stub
-            channel = grpc.insecure_channel(target)
-            stub = product_db_pb2_grpc.ProductDbServiceStub(channel)
-            self._channels[target] = channel
-            self._stubs[target] = stub
-            return stub
-
-    def forward_if_needed(
-        self,
-        context: grpc.ServicerContext,
-        rpc_name: str,
-        request: Any,
-    ) -> Any | None:
-        target = self.raft.get_leader_grpc_target_or_error(
-            already_forwarded=self._is_forwarded_request(context)
-        )
-        if target is None:
-            return None
-
-        stub = self._get_stub(target)
-        rpc = getattr(stub, rpc_name)
-        try:
-            return rpc(
-                request,
-                timeout=self.raft.config.command_timeout_sec,
-                metadata=[(FORWARDED_READ_HEADER, "1")],
-            )
-        except grpc.RpcError as exc:
-            raise RaftError(
-                "LEADER_FORWARD_FAILED",
-                f"Failed to forward read to leader: {exc.details() or exc}",
-                exc.code() if isinstance(exc.code(), grpc.StatusCode) else grpc.StatusCode.UNAVAILABLE,
-            ) from exc
+        return replayed

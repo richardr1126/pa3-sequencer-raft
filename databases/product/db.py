@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     create_engine,
     event,
@@ -173,6 +174,27 @@ class ItemFeedbackVote(Base):
     item: Mapped[Item] = relationship(back_populates="feedback_votes")
 
 
+class RaftApplyState(Base):
+    __tablename__ = "raft_apply_state"
+
+    singleton_id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
+    last_applied_raft_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+
+class RaftApplyResult(Base):
+    __tablename__ = "raft_apply_results"
+
+    raft_index: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=False)
+    response_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utcnow)
+
+
 def make_engine(*, echo: bool = False, db_path: str | Path | None = None) -> Engine:
     db_file = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -180,9 +202,6 @@ def make_engine(*, echo: bool = False, db_path: str | Path | None = None) -> Eng
         f"sqlite:///{db_file}",
         echo=echo,
         connect_args={"timeout": 600},
-        pool_size=20,  # Base pool size
-        max_overflow=100,  # Allow up to 120 total connections
-        pool_timeout=None,  # Unlimited timeout for waiting on a connection
     )
 
     # Ensure FK constraints and WAL are enforced in SQLite.
@@ -191,6 +210,9 @@ def make_engine(*, echo: bool = False, db_path: str | Path | None = None) -> Eng
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.execute("PRAGMA wal_autocheckpoint=2000")
         cursor.execute("PRAGMA busy_timeout=600000")
         cursor.close()
 

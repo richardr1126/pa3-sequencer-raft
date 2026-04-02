@@ -26,7 +26,6 @@ from databases.product.api import ProductDomainApi
 from databases.product.db import init_db, make_session_factory
 from databases.product.raft import (
     ProductRaftNode,
-    ProductReadForwarder,
     RaftError,
     build_raft_config_from_env,
 )
@@ -44,10 +43,9 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     def __init__(self, api: ProductDomainApi, raft_node: ProductRaftNode):
         self.api = api
         self.raft = raft_node
-        self.forwarder = ProductReadForwarder(raft_node)
 
     def close(self) -> None:
-        self.forwarder.close()
+        pass
 
     @staticmethod
     def _timestamp_from_iso(value: str | None) -> Timestamp | None:
@@ -107,12 +105,12 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
             self._abort_from_exception(context, exc)
             raise
 
-    def _apply_write(
+    def _commit_write(
         self,
         context: grpc.ServicerContext,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        return self._execute(context, lambda: self.raft.apply(payload))
+        return self._execute(context, lambda: self.raft.commit_write(payload))
 
     def CreateItem(
         self, request: product_db_pb2.CreateItemRequest, context: grpc.ServicerContext
@@ -133,7 +131,7 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
             }
 
             try:
-                result = self.raft.apply(payload)
+                result = self.raft.commit_write(payload)
             except RaftError as exc:
                 if self._is_item_id_collision(exc):
                     continue
@@ -153,13 +151,6 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     def GetItem(
         self, request: product_db_pb2.GetItemRequest, context: grpc.ServicerContext
     ) -> product_db_pb2.GetItemResponse:
-        forwarded = self._execute(
-            context,
-            lambda: self.forwarder.forward_if_needed(context, "GetItem", request),
-        )
-        if forwarded is not None:
-            return forwarded
-
         result = self._execute(
             context,
             lambda: self.api.get_item(
@@ -180,7 +171,7 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     ) -> product_db_pb2.UpdateItemPriceResponse:
         # `seller_id` is optional: absent means no ownership check at this layer.
         seller_id = request.seller_id if request.HasField("seller_id") else None
-        result = self._apply_write(
+        result = self._commit_write(
             context,
             {
                 "type": "UpdateItemPrice",
@@ -208,7 +199,7 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
 
         # `seller_id` is optional: absent means no ownership check at this layer.
         seller_id = request.seller_id if request.HasField("seller_id") else None
-        result = self._apply_write(
+        result = self._commit_write(
             context,
             {
                 "type": "UpdateItemQuantity",
@@ -226,7 +217,7 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     ) -> product_db_pb2.DeleteItemResponse:
         # `seller_id` is optional: absent means no ownership check at this layer.
         seller_id = request.seller_id if request.HasField("seller_id") else None
-        result = self._apply_write(
+        result = self._commit_write(
             context,
             {
                 "type": "DeleteItem",
@@ -242,13 +233,6 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.ListItemsBySellerRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.ListItemsBySellerResponse:
-        forwarded = self._execute(
-            context,
-            lambda: self.forwarder.forward_if_needed(context, "ListItemsBySeller", request),
-        )
-        if forwarded is not None:
-            return forwarded
-
         result = self._execute(
             context,
             lambda: self.api.list_items_by_seller(
@@ -263,13 +247,6 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
     def SearchItems(
         self, request: product_db_pb2.SearchItemsRequest, context: grpc.ServicerContext
     ) -> product_db_pb2.SearchItemsResponse:
-        forwarded = self._execute(
-            context,
-            lambda: self.forwarder.forward_if_needed(context, "SearchItems", request),
-        )
-        if forwarded is not None:
-            return forwarded
-
         result = self._execute(
             context,
             lambda: self.api.search_items(
@@ -292,7 +269,7 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.AddFeedbackVoteRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.AddFeedbackVoteResponse:
-        result = self._apply_write(
+        result = self._commit_write(
             context,
             {
                 "type": "AddFeedbackVote",
@@ -313,13 +290,6 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.GetItemFeedbackRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.GetItemFeedbackResponse:
-        forwarded = self._execute(
-            context,
-            lambda: self.forwarder.forward_if_needed(context, "GetItemFeedback", request),
-        )
-        if forwarded is not None:
-            return forwarded
-
         result = self._execute(
             context,
             lambda: self.api.get_item_feedback(
@@ -343,13 +313,6 @@ class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
         request: product_db_pb2.CheckBuyerVotedRequest,
         context: grpc.ServicerContext,
     ) -> product_db_pb2.CheckBuyerVotedResponse:
-        forwarded = self._execute(
-            context,
-            lambda: self.forwarder.forward_if_needed(context, "CheckBuyerVoted", request),
-        )
-        if forwarded is not None:
-            return forwarded
-
         result = self._execute(
             context,
             lambda: self.api.check_buyer_voted(
@@ -380,7 +343,14 @@ def run_server(host: str, port: int):
     domain_api = ProductDomainApi(db_session_factory)
     raft = ProductRaftNode(
         config=raft_config,
-        apply_fn=domain_api.apply_raft_command,
+        apply_committed_write_fn=domain_api.apply_committed_write,
+    )
+    sqlite_last_applied = domain_api.get_last_applied_raft_index()
+    replayed = raft.replay_committed_writes(sqlite_last_applied)
+    logger.info(
+        "Product DB sqlite replay complete: last_applied=%s replayed=%s",
+        sqlite_last_applied,
+        replayed,
     )
 
     service = ProductDbService(domain_api, raft)

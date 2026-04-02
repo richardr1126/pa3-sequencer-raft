@@ -1,7 +1,5 @@
 """Sequencer assignment helpers for rotating ownership."""
 
-from __future__ import annotations
-
 from .messages import SequenceMessage, parse_request_key
 from .state_store import SequencerState
 

@@ -74,16 +74,48 @@ def _item_to_dict(item: product_db_pb2.Item) -> dict[str, int | float | str | li
     }
 
 
+def _is_retryable_rpc_error(exc: grpc.RpcError) -> bool:
+    return exc.code() in {
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+    }
+
+
+def _invoke_round_robin_rpc(
+    *,
+    stubs: list,
+    method_name: str,
+    request,
+    start_index: int,
+    all_failed_error: str,
+):
+    last_retryable_error: grpc.RpcError | None = None
+    for offset in range(len(stubs)):
+        stub = stubs[(start_index + offset) % len(stubs)]
+        method = getattr(stub, method_name)
+        try:
+            return method(request)
+        except grpc.RpcError as exc:
+            if _is_retryable_rpc_error(exc):
+                last_retryable_error = exc
+                continue
+            raise
+
+    if last_retryable_error is not None:
+        raise last_retryable_error
+    raise RuntimeError(all_failed_error)
+
+
 class CustomerDbClient:
     """Typed gRPC client for customer database operations."""
 
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
-        self._channels: list[grpc.Channel] = []
-        self._stubs: list[customer_db_pb2_grpc.CustomerDbServiceStub] = []
         self._round_robin_lock = threading.Lock()
         self._next_stub_index = 0
+        self._channels: list[grpc.Channel] = []
+        self._stubs: list[customer_db_pb2_grpc.CustomerDbServiceStub] = []
 
         raw_targets = [token.strip() for token in host.split(",") if token.strip()]
         if not raw_targets:
@@ -103,36 +135,22 @@ class CustomerDbClient:
         for channel in self._channels:
             channel.close()
 
-    @staticmethod
-    def _is_retryable(exc: grpc.RpcError) -> bool:
-        return exc.code() in {
-            grpc.StatusCode.UNAVAILABLE,
-            grpc.StatusCode.DEADLINE_EXCEEDED,
-        }
-
     def _rpc(self, method_name: str, request):
-        if not self._stubs:
+        stubs = self._stubs
+        if not stubs:
             raise RuntimeError("No customer DB endpoints configured")
 
         with self._round_robin_lock:
             start_index = self._next_stub_index
-            self._next_stub_index = (self._next_stub_index + 1) % len(self._stubs)
+            self._next_stub_index = (self._next_stub_index + 1) % len(stubs)
 
-        last_retryable_error: grpc.RpcError | None = None
-        for offset in range(len(self._stubs)):
-            stub = self._stubs[(start_index + offset) % len(self._stubs)]
-            method = getattr(stub, method_name)
-            try:
-                return method(request)
-            except grpc.RpcError as exc:
-                if self._is_retryable(exc):
-                    last_retryable_error = exc
-                    continue
-                raise
-
-        if last_retryable_error is not None:
-            raise last_retryable_error
-        raise RuntimeError("All customer DB endpoints failed")
+        return _invoke_round_robin_rpc(
+            stubs=stubs,
+            method_name=method_name,
+            request=request,
+            start_index=start_index,
+            all_failed_error="All customer DB endpoints failed",
+        )
 
     def create_buyer(self, *, buyer_name: str, login_name: str, password: str) -> dict:
         response = self._rpc(
@@ -434,10 +452,10 @@ class ProductDbClient:
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
-        self._channels: list[grpc.Channel] = []
-        self._stubs: list[product_db_pb2_grpc.ProductDbServiceStub] = []
         self._round_robin_lock = threading.Lock()
         self._next_stub_index = 0
+        self._channels: list[grpc.Channel] = []
+        self._stubs: list[product_db_pb2_grpc.ProductDbServiceStub] = []
 
         raw_targets = [token.strip() for token in host.split(",") if token.strip()]
         if not raw_targets:
@@ -457,37 +475,22 @@ class ProductDbClient:
         for channel in self._channels:
             channel.close()
 
-    @staticmethod
-    def _is_retryable(exc: grpc.RpcError) -> bool:
-        return exc.code() in {
-            grpc.StatusCode.UNAVAILABLE,
-            grpc.StatusCode.DEADLINE_EXCEEDED,
-        }
-
     def _rpc(self, method_name: str, request):
-        if not self._stubs:
+        stubs = self._stubs
+        if not stubs:
             raise RuntimeError("No product DB endpoints configured")
 
         with self._round_robin_lock:
             start_index = self._next_stub_index
-            self._next_stub_index = (self._next_stub_index + 1) % len(self._stubs)
+            self._next_stub_index = (self._next_stub_index + 1) % len(stubs)
 
-        last_retryable_error: grpc.RpcError | None = None
-        for offset in range(len(self._stubs)):
-            index = (start_index + offset) % len(self._stubs)
-            stub = self._stubs[index]
-            method = getattr(stub, method_name)
-            try:
-                return method(request)
-            except grpc.RpcError as exc:
-                if self._is_retryable(exc):
-                    last_retryable_error = exc
-                    continue
-                raise
-
-        if last_retryable_error is not None:
-            raise last_retryable_error
-        raise RuntimeError("All product DB endpoints failed")
+        return _invoke_round_robin_rpc(
+            stubs=stubs,
+            method_name=method_name,
+            request=request,
+            start_index=start_index,
+            all_failed_error="All product DB endpoints failed",
+        )
 
     def create_item(
         self,

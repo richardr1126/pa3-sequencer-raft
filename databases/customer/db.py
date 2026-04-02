@@ -212,9 +212,6 @@ def make_engine(*, echo: bool = False) -> Engine:
         DATABASE_URL,
         echo=echo,
         connect_args={"timeout": 600},
-        pool_size=20,  # Base pool size
-        max_overflow=100,  # Allow up to 120 total connections
-        pool_timeout=None,  # Unlimited timeout for waiting on a connection
     )
 
     # Ensure FK constraints and WAL are enforced in SQLite.
@@ -223,6 +220,9 @@ def make_engine(*, echo: bool = False) -> Engine:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.execute("PRAGMA wal_autocheckpoint=2000")
         cursor.execute("PRAGMA busy_timeout=600000")
         cursor.close()
 

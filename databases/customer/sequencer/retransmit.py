@@ -1,7 +1,5 @@
 """Retransmit/NACK helpers for missing request/sequence detection."""
 
-from __future__ import annotations
-
 from .messages import RetransmitMessage, parse_request_key
 from .state_store import SequencerState
 

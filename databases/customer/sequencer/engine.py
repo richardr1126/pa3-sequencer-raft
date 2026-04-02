@@ -1,7 +1,5 @@
 """Rotating sequencer replication engine (UDP transport + protocol orchestration)."""
 
-from __future__ import annotations
-
 import logging
 import threading
 import time

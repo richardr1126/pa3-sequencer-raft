@@ -1,7 +1,5 @@
 """UDP transport for customer sequencer replication."""
 
-from __future__ import annotations
-
 import random
 import socket
 import threading

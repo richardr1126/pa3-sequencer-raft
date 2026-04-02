@@ -40,7 +40,11 @@ This project implements a 3-tier architecture for an online marketplace platform
 ##### Product DB assumptions
 - Replicated through PySyncObj's Raft implementation for high availability on 3 or more nodes.
 - Backend buyers and sellers product db client uses client-side round-robin endpoint selection with retry failover across product DB nodes.
-- For product DB consistency, all reads received on any node are also forwarded to the Raft leader, so all operations are linearized through the leader's log.
+- Consistent: write APIs (`CreateItem`, `UpdateItemPrice`, `UpdateItemQuantity`, `DeleteItem`, `AddFeedbackVote`) are committed through Raft and return after commit.
+- Raft log index is treated as the global write order identifier for Product DB writes.
+- Product SQLite stores `last_applied_raft_index` and per-index apply results; writes are applied idempotently by raft index.
+- On startup, each Product DB node replays missing committed Raft regular entries (index `> last_applied_raft_index`) into SQLite before serving traffic.
+- Eventually Consistent: read APIs (`GetItem`, `ListItemsBySeller`, `SearchItems`, `GetItemFeedback`, `CheckBuyerVoted`) are served locally on any replica and may be briefly stale during replication lag/failover.
 - Item IDs are composite keys of (int item_category, int item_id) where item category is the high-level category chosen by the seller and item_id is a unique identifier within that category (63-bit random integer w/ collision retries).
 - **Search semantics:** category match is exact; if keywords are provided, items are ranked by keyword match count; only non-deleted items with quantity > 0 are returned.
 - Items are tombstoned (set deleted_at) and hidden from normal Get/Search; cart display will include deleted items that are "no longer availble".
@@ -50,19 +54,53 @@ This project implements a 3-tier architecture for an online marketplace platform
 ## Current State
 
 ### What Works
-- 5-process local deployment with HTTP edge services (backend-sellers, backend-buyers), gRPC DB services (Customer DB, Product DB), and a SOAP financial service with configurable host/ports.
+- HTTP edge services (backend-sellers, backend-buyers), gRPC DB services (Customer DB, Product DB), and a SOAP financial service with configurable host/ports.
 - Client-to-backend communication uses HTTP JSON, while backend-to-DB uses typed gRPC/protobuf RPCs.
 - Seller APIs: CreateAccount, Login, Logout, GetSellerRating, RegisterItemForSale, ChangeItemPrice, UpdateUnitsForSale, DisplayItemsForSale.
 - Buyer APIs: CreateAccount, Login, Logout, SearchItemsForSale, GetItem, AddItemToCart, RemoveItemFromCart, DisplayCart, SaveCart, ClearCart, ProvideFeedback, GetSellerRating, GetBuyerPurchases, MakePurchase.
 - Session timeout: 5 minutes of inactivity (validated in Customer DB; backend periodically “touches” sessions while handling requests).
 - Client-side command line interfaces (CLIs) for buyers and sellers with all API commands implemented.
 - Benchmark script with 3 scenarios
+- Docker Compose deployment path runs replicated DB tiers (3 Customer DB sequencer replicas and 3 Product DB Raft replicas).
+- Customer DB replication uses UDP rotating sequencer ordering with retransmit (NACK) recovery.
+- Product DB reads are served locally on replicas and are eventually consistent during replication/failover windows.
+- Product DB write apply is idempotent by Raft log index and startup performs replay of missing committed entries into SQLite.
+- Backend DB clients use client-side round-robin endpoint selection with retry failover.
 
 ### What Doesn't Work / Not Implemented
 
 - Retry logic in clients is basic; no idempotency guarantees.
-- No retry logic in backend services when connecting to DB services or idempotency guarantees.
+- Backend DB retry/failover is best-effort (round-robin + retry), but there are no end-to-end idempotency keys from client through backend.
+- Customer sequencer state is in-memory only; process restart discards protocol state.
 - No advanced testing suite (manual CLI flow + benchmark script are the primary validation).
+
+## Docker Compose Dev Setup
+
+Use this path for the fastest full-stack local run (3x Customer DB sequencer replicas + 3x Product DB Raft replicas + both backends + financial service).
+
+### 1) Build and start all services
+
+From repo root:
+
+```bash
+docker compose up --build
+```
+
+### 2) Run benchmark/CLIs against compose
+
+```bash
+uv run python benchmark.py --scenario 1
+uv run python clients/sellers/cli.py --help
+uv run python clients/buyers/cli.py --help
+```
+
+### 3) Stop (and optionally reset volumes)
+
+```bash
+docker compose down
+# optional full reset:
+docker compose down -v
+```
 
 ## Environment Setup
 
@@ -78,45 +116,9 @@ uv sync --all-groups
 
 After syncing, you can either run commands via `uv run ...` or activate the virtualenv (`source .venv/bin/activate`) and use `python ...`.
 
-### 2) Start the 5 services (5 terminals)
+### 2) Run benchmark/CLIs
 
-Default ports:
-
-- Customer DB: `8001`
-- Product DB: `8002`
-- Backend sellers: `8003`
-- Backend buyers: `8004`
-- Financial SOAP service: `8005`
-
-Start each in its own terminal (from repo root):
-
-```bash
-# Terminal 1
-uv run python databases/customer/main.py
-
-# Terminal 2
-uv run python databases/product/main.py
-
-# Terminal 3
-uv run python backends/sellers/main.py
-
-# Terminal 4
-uv run python backends/buyers/main.py
-
-# Terminal 5
-uv run python backends/financial/main.py
-
-```
-
-`backends/sellers/main.py` and `backends/buyers/main.py` start Uvicorn-hosted FastAPI apps.
-If your financial SOAP endpoint is not `http://localhost:8005/?wsdl`, start buyers with `--financial-wsdl-url <wsdl_url>`.
-
-### 3) Run the CLIs
-
-- Seller CLI: `uv run python clients/sellers/cli.py --help`
-- Buyer CLI: `uv run python clients/buyers/cli.py --help`
-
-### 4) Run the benchmark
+After starting your backend and DB services (either via local terminals, Docker Compose, or GKE), you can run the benchmark script or client CLIs against the appropriate host/ports.
 
 ```bash
 # All scenarios (default 10 runs each)
@@ -243,83 +245,88 @@ Generated Python stubs are stored in `common/grpc_gen/` and are used by:
 - DB servers (`databases/customer/main.py`, `databases/product/main.py`) as gRPC servicers
 - Backend DB clients (`backends/common/db_client.py`) as typed stubs
 
-## GCP: 4-VM Deployment Scripts
+## GCP: GKE Cluster Deployment
 
-This repo includes GCP scripts (adapted from your previous lab flow) to provision four VMs for distributed testing:
-
-- `customer-db` (gRPC DB service on `8001`)
-- `product-db` (gRPC DB service on `8002`)
-- `backend-sellers` (HTTP backend on `8003`)
-- `backend-buyers` (HTTP backend on `8004`)
+The GCP deployment path is now Kubernetes-based (GKE), not VM-based.
 
 ### Prerequisites
 
-1. Authenticate locally for Application Default Credentials:
-
 ```bash
 gcloud auth application-default login
-```
-
-2. Set GitHub env vars used by VM startup clone:
-
-```bash
-export GITHUB_REPO_URL="https://github.com/<you>/<your-repo>.git"
-export GITHUB_PAT="<your_github_pat>"
-```
-
-3. Install script dependencies if needed:
-
-```bash
+gcloud config set project YOUR_PROJECT_ID
 uv sync --all-groups
 ```
 
-### Create all 4 VMs
+### Create the GKE Cluster
 
-From repo root:
+From the `k8s/` directory:
 
 ```bash
-uv run gcp/create_4_vms.py --prefix pa2 --zone us-west1-a --replace-existing
+python gke-cluster.py create --name pa3-cloud
 ```
 
-What it does:
-
-- Creates/ensures firewall rules for backend HTTP (`8003`, `8004`) and private DB gRPC (`8001`, `8002`).
-- Creates DB VMs first, reads their internal IPs, then creates backend VMs with those DB IPs wired into startup commands.
-- Prints internal/external IPs for all four instances.
-
-### Tail VM logs
+Then configure `kubectl`:
 
 ```bash
-gcloud compute ssh <prefix>-customer-db --zone us-west1-a --command "sudo tail -n 120 -f /var/log/pa2-startup-customer-db.log"
-gcloud compute ssh <prefix>-customer-db --zone us-west1-a --command "sudo tail -n 120 -f /opt/pa2-repo/logs/customer-db.log"
-
-gcloud compute ssh <prefix>-product-db --zone us-west1-a --command "sudo tail -n 120 -f /var/log/pa2-startup-product-db.log"
-gcloud compute ssh <prefix>-product-db --zone us-west1-a --command "sudo tail -n 120 -f /opt/pa2-repo/logs/product-db.log"
-
-gcloud compute ssh <prefix>-backend-sellers --zone us-west1-a --command "sudo tail -n 120 -f /var/log/pa2-startup-backend-sellers.log"
-gcloud compute ssh <prefix>-backend-sellers --zone us-west1-a --command "sudo tail -n 120 -f /opt/pa2-repo/logs/backend-sellers.log"
-
-gcloud compute ssh <prefix>-backend-buyers --zone us-west1-a --command "sudo tail -n 120 -f /var/log/pa2-startup-backend-buyers.log"
-gcloud compute ssh <prefix>-backend-buyers --zone us-west1-a --command "sudo tail -n 120 -f /opt/pa2-repo/logs/backend-buyers.log"
+gcloud container clusters get-credentials pa3-cloud --zone us-central1-b --project YOUR_PROJECT_ID
+kubectl get nodes
 ```
 
-### Delete all 4 VMs
+### Install Core Ingress Components
+
+Create `k8s/helm/.env` with at least:
 
 ```bash
-uv run python gcp/delete_4_vms.py --prefix pa2 --yes
+CLOUDFLARE_API_TOKEN=...
 ```
 
-### Run benchmark against VM backends
-
-Use the external IPs printed for `backend-sellers` and `backend-buyers`:
+Install ExternalDNS + Traefik:
 
 ```bash
-uv run python benchmark.py --scenario 1 --sellers-host <backend-sellers-external-ip> --buyers-host <backend-buyers-external-ip> --sellers-port 8003 --buyers-port 8004
+cd k8s/helm
+./install-apps.sh
 ```
 
-### Manual CLI testing against VM backends
+### Deploy Application Workloads
+
+Build and push your service images, then apply your Kubernetes manifests (deployments/services/ingress) for:
+
+- `db-customer`
+- `db-product`
+- `backend-sellers`
+- `backend-buyers`
+- `backend-financial`
+
+Verify rollout:
 
 ```bash
-uv run python clients/sellers/cli.py --host <backend-sellers-external-ip> --port 8003 --help
-uv run python clients/buyers/cli.py --host <backend-buyers-external-ip> --port 8004 --help
+kubectl -n pa3 get pods -o wide
+kubectl -n pa3 get svc
+kubectl -n pa3 get ingress
+```
+
+### Cluster Operations
+
+Scale cluster node count:
+
+```bash
+cd k8s
+python gke-cluster.py scale --name pa3-cloud --nodes 19
+```
+
+Delete cluster:
+
+```bash
+cd k8s
+python gke-cluster.py delete --name pa3-cloud
+```
+
+### Benchmark / CLI Against GKE
+
+Run benchmarks and CLI against your ingress/LB endpoint(s):
+
+```bash
+uv run python benchmark.py --scenario 1 --sellers-host <sellers-host> --buyers-host <buyers-host> --sellers-port 80 --buyers-port 80
+uv run python clients/sellers/cli.py --host <sellers-host> --port 80 --help
+uv run python clients/buyers/cli.py --host <buyers-host> --port 80 --help
 ```

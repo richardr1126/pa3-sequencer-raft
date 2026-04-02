@@ -1,7 +1,5 @@
 """Typed wire messages for customer sequencer replication."""
 
-from __future__ import annotations
-
 import json
 from typing import Annotated, Any, Literal
 
