@@ -17,6 +17,9 @@ CASE_NAME="scenario${SCENARIO}__${FAILURE_MODE}"
 
 ./k8s/helm/reinstall-marketplace.sh
 
+# Give customer sequencer cluster time to converge before benchmark traffic starts.
+sleep 20
+
 kubectl -n default port-forward svc/marketplace-backend-sellers 8003:8003 >/dev/null 2>&1 &
 PF_SELLERS_PID=$!
 kubectl -n default port-forward svc/marketplace-backend-buyers 8004:8004 >/dev/null 2>&1 &

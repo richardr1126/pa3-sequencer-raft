@@ -44,6 +44,11 @@ spec:
           {{- end }}
           image: "{{ .Values.dbCustomer.image.repository }}:{{ .Values.dbCustomer.image.tag }}"
           imagePullPolicy: {{ .Values.dbCustomer.image.pullPolicy }}
+          command:
+            - uv
+            - run
+            - --no-sync
+            - databases/customer/main.py
           args:
             - --port
             - {{ .Values.dbCustomer.service.grpcPort | quote }}

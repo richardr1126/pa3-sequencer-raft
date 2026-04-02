@@ -42,6 +42,11 @@ spec:
           {{- end }}
           image: "{{ .Values.backendSellers.image.repository }}:{{ .Values.backendSellers.image.tag }}"
           imagePullPolicy: {{ .Values.backendSellers.image.pullPolicy }}
+          command:
+            - uv
+            - run
+            - --no-sync
+            - backends/sellers/main.py
           args:
             - --port
             - {{ .Values.backendSellers.service.port | quote }}

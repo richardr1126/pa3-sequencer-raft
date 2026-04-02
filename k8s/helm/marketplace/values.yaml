@@ -52,11 +52,11 @@ dbCustomer:
     - name: CUSTOMER_SEQUENCER_UDP_BIND_PORT
       value: "12001"
     - name: CUSTOMER_SEQUENCER_COMMAND_TIMEOUT_SEC
-      value: "10.0"
+      value: "30.0"
     - name: CUSTOMER_SEQUENCER_RETRY_SEC
       value: "0.05"
     - name: CUSTOMER_SEQUENCER_DROP_PROB
-      value: "0.0001"
+      value: "0.0"
   persistence:
     accessModes:
       - ReadWriteOnce

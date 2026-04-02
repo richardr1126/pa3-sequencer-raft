@@ -42,6 +42,11 @@ spec:
           {{- end }}
           image: "{{ .Values.backendFinancial.image.repository }}:{{ .Values.backendFinancial.image.tag }}"
           imagePullPolicy: {{ .Values.backendFinancial.image.pullPolicy }}
+          command:
+            - uv
+            - run
+            - --no-sync
+            - backends/financial/main.py
           args:
             - --port
             - {{ .Values.backendFinancial.service.port | quote }}

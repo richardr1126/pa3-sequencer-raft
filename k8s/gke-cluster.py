@@ -25,10 +25,10 @@ zone_operations_client = compute_v1.ZoneOperationsClient(credentials=credentials
 
 # Configuration
 DEFAULT_CLUSTER_NAME = "pa3-cloud"
-ZONE = "us-central1-b"  # Single zone for cost savings
+ZONE = "us-central1-f"  # Single zone for cost savings
 REGION = ZONE.rsplit("-", 1)[0]
 MACHINE_TYPES = ("e2-small", "n2d-highcpu-2")
-DEFAULT_NODE_POOL_SIZES = [10, 9]  # pool-1, pool-2
+DEFAULT_NODE_POOL_SIZES = [12, 7]  # pool-1, pool-2
 DISK_SIZE_GB = 30
 DISK_TYPE = "pd-standard"  # Standard persistent disk (cheapest)
 TOTAL_INITIAL_NODES = sum(DEFAULT_NODE_POOL_SIZES)
@@ -141,7 +141,7 @@ def create_cloud_nat(cluster_name):
         print(f"     --nat-all-subnet-ip-ranges")
         return False
 
-def create_gke_cluster(cluster_name, enable_spot=True):
+def create_gke_cluster(cluster_name, enable_spot=False):
     """Create a GKE cluster with cost-optimized settings using mostly defaults.
 
     We keep only options that directly reduce cost:
@@ -332,7 +332,8 @@ def create_gke_cluster(cluster_name, enable_spot=True):
         print(f"{'='*70}")
         print(f"   • Started with {TOTAL_INITIAL_NODES} total nodes across {len(MACHINE_TYPES)} pools")
         print(f"   • Scale toward 19 nodes if quota allows near one-replica-per-node placement")
-        print(f"   • Spot instances save money but may be preempted")
+        print(f"   • Spot instances are disabled by default for benchmark stability")
+        print(f"   • Use --spot if you explicitly want lower-cost preemptible nodes")
         print(f"\n{'='*70}")
         
         return True
@@ -651,7 +652,7 @@ def list_clusters():
 def main():
     """Main function to handle cluster operations."""
     parser = argparse.ArgumentParser(
-        description="Create and manage cost-optimized GKE clusters with spot instances"
+        description="Create and manage cost-optimized GKE clusters"
     )
     parser.add_argument(
         "action",
@@ -663,10 +664,16 @@ def main():
         default=DEFAULT_CLUSTER_NAME,
         help=f"Name of the cluster (default: {DEFAULT_CLUSTER_NAME})"
     )
-    parser.add_argument(
+    spot_group = parser.add_mutually_exclusive_group()
+    spot_group.add_argument(
+        "--spot",
+        action="store_true",
+        help="Enable spot instances (disabled by default)"
+    )
+    spot_group.add_argument(
         "--no-spot",
         action="store_true",
-        help="Disable spot instances (use regular instances instead)"
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--nodes",
@@ -686,7 +693,7 @@ def main():
     print(f"Zone: {ZONE}")
     
     if args.action == "create":
-        enable_spot = not args.no_spot
+        enable_spot = bool(args.spot) and not bool(args.no_spot)
         success = create_gke_cluster(
             args.name,
             enable_spot,
