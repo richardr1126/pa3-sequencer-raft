@@ -11,6 +11,7 @@ The benchmark uses REST clients backed by httpx.
 
 import argparse
 import contextlib
+import os
 import random
 import statistics
 import subprocess
@@ -84,6 +85,18 @@ def maybe_log_to_file(log_file: str | None):
             stderr_tee
         ):
             yield
+
+
+def resolve_results_run_dir() -> Path:
+    """Resolve/create the timestamped benchmark run directory."""
+    results_root = Path("benchmark-results")
+    results_root.mkdir(parents=True, exist_ok=True)
+    run_id = os.getenv("BENCHMARK_RUN_ID", "").strip() or time.strftime(
+        "%Y%m%d-%H%M%S"
+    )
+    run_dir = results_root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
 
 
 def time_request(fn, *args, **kwargs):
@@ -814,6 +827,15 @@ Examples:
         default=None,
         help="Optional path for benchmark log output (stdout/stderr are mirrored)",
     )
+    parser.add_argument(
+        "--case-name",
+        default=None,
+        help=(
+            "Optional case name for auto results output. "
+            "When set, benchmark.py manages timestamped results dir "
+            "and per-case log file path."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -841,6 +863,11 @@ Examples:
 
     if args.scenario:
         scenarios = {args.scenario: scenarios[args.scenario]}
+
+    if args.case_name:
+        run_dir = resolve_results_run_dir()
+        if not args.log_file:
+            args.log_file = str(run_dir / f"{args.case_name}.log")
 
     with maybe_log_to_file(args.log_file):
         print("-" * 50)
