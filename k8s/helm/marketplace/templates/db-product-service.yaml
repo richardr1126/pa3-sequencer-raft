@@ -1,0 +1,25 @@
+{{- if .Values.dbProduct.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketplace-db-product
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: db-product
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: grpc
+      port: {{ .Values.dbProduct.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    - name: raft
+      port: {{ .Values.dbProduct.service.raftPort }}
+      targetPort: raft
+      protocol: TCP
+  selector:
+    app: {{ .Values.common.appLabel }}
+    component: db-product
+{{- end }}

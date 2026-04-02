@@ -1,0 +1,20 @@
+{{- if .Values.backendBuyers.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketplace-backend-buyers
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: backend-buyers
+spec:
+  type: {{ .Values.backendBuyers.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.backendBuyers.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: {{ .Values.common.appLabel }}
+    component: backend-buyers
+{{- end }}

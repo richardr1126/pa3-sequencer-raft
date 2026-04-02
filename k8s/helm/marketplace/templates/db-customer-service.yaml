@@ -1,0 +1,25 @@
+{{- if .Values.dbCustomer.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketplace-db-customer
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: db-customer
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: grpc
+      port: {{ .Values.dbCustomer.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    - name: sequencer
+      port: {{ .Values.dbCustomer.service.sequencerUdpPort }}
+      targetPort: sequencer
+      protocol: UDP
+  selector:
+    app: {{ .Values.common.appLabel }}
+    component: db-customer
+{{- end }}

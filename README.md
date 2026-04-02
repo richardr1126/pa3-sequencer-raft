@@ -60,7 +60,7 @@ This project implements a 3-tier architecture for an online marketplace platform
 - Buyer APIs: CreateAccount, Login, Logout, SearchItemsForSale, GetItem, AddItemToCart, RemoveItemFromCart, DisplayCart, SaveCart, ClearCart, ProvideFeedback, GetSellerRating, GetBuyerPurchases, MakePurchase.
 - Session timeout: 5 minutes of inactivity (validated in Customer DB; backend periodically “touches” sessions while handling requests).
 - Client-side command line interfaces (CLIs) for buyers and sellers with all API commands implemented.
-- Benchmark script with 3 scenarios
+- Benchmark script with 3 scenarios, per-client-function latency output, and optional failure injection controls for PA3-style evaluations.
 - Docker Compose deployment path runs replicated DB tiers (3 Customer DB sequencer replicas and 3 Product DB Raft replicas).
 - Customer DB replication uses UDP rotating sequencer ordering with retransmit (NACK) recovery.
 - Product DB reads are served locally on replicas and are eventually consistent during replication/failover windows.
@@ -126,7 +126,58 @@ uv run python benchmark.py
 
 # Scenario 3 only
 uv run python benchmark.py --scenario 3
+
+# Scenario 2 with a compose failure preset (kills backend sellers+buyers once per run)
+uv run python benchmark.py --scenario 2 --failure-mode backend-sellers-buyers --failure-platform compose --failure-delay-sec 5
 ```
+
+### Benchmark Failure Injection Flags
+
+- `--failure-mode`: `none` (default), `backend-sellers-buyers`, `product-follower`, `product-leader`
+- `--failure-platform`: `compose` (default) or `k8s` (preset commands enabled for marketplace chart names in namespace `default`)
+- `--failure-command`: explicit shell command; overrides presets if provided
+- `--failure-delay-sec`: delay before running the failure command in each run (default `5.0`)
+
+Examples:
+
+```bash
+# Kill one product follower in compose once per run
+uv run python benchmark.py --scenario 1 --failure-mode product-follower
+
+# Explicit command override (works for any environment)
+uv run python benchmark.py --scenario 1 --failure-command "docker compose kill db-product-1-1"
+
+# Kill one backend-sellers and one backend-buyers pod in k8s once per run
+uv run python benchmark.py --scenario 1 --failure-mode backend-sellers-buyers --failure-platform k8s
+
+# Kill product db follower/leader presets in k8s once per run
+uv run python benchmark.py --scenario 1 --failure-mode product-follower --failure-platform k8s
+uv run python benchmark.py --scenario 1 --failure-mode product-leader --failure-platform k8s
+```
+
+### Full GKE Automation (Create Cluster + Run All PA3 Cases)
+
+Use the root script to automate:
+
+- Cluster create/connect (`k8s/gke-cluster.py`, `gcloud get-credentials`)
+- `k8s/helm/install-apps.sh`
+- Marketplace reset helper: `k8s/helm/reinstall-marketplace.sh`
+- Port-forward sellers/buyers services
+- Full benchmark matrix:
+  - Scenarios: `1,2,3`
+  - Failure modes: `none`, `backend-sellers-buyers`, `product-follower`, `product-leader`
+  - Default `10` runs per case, `1000` ops per client
+
+```bash
+./run-pa3-benchmarks-gke.sh
+```
+
+The script writes per-case logs and a `summary.tsv` under `benchmark-results/<timestamp>/`.
+`run-pa3-benchmarks-gke.sh` is intentionally fixed and deterministic:
+- Uses `pa3-cloud` in `us-central1-b`
+- Runs `10` iterations per case with `1000` ops/client
+- Deletes and recreates marketplace state for every case
+- Deletes the cluster at the end
 
 
 ## Clients (Frontend CLIs)
@@ -247,86 +298,22 @@ Generated Python stubs are stored in `common/grpc_gen/` and are used by:
 
 ## GCP: GKE Cluster Deployment
 
-The GCP deployment path is now Kubernetes-based (GKE), not VM-based.
+The detailed GKE setup and operations guide lives in:
 
-### Prerequisites
+- [`k8s/README.md`](/Users/richardroberson/Documents/classes/distributed-systems/pa3-sequencer-raft/k8s/README.md)
 
-```bash
-gcloud auth application-default login
-gcloud config set project YOUR_PROJECT_ID
-uv sync --all-groups
-```
-
-### Create the GKE Cluster
-
-From the `k8s/` directory:
+Quick entry points:
 
 ```bash
-python gke-cluster.py create --name pa3-cloud
-```
+# create cluster
+cd k8s
+uv run python gke-cluster.py create
 
-Then configure `kubectl`:
-
-```bash
-gcloud container clusters get-credentials pa3-cloud --zone us-central1-b --project YOUR_PROJECT_ID
-kubectl get nodes
-```
-
-### Install Core Ingress Components
-
-Create `k8s/helm/.env` with at least:
-
-```bash
-CLOUDFLARE_API_TOKEN=...
-```
-
-Install ExternalDNS + Traefik:
-
-```bash
-cd k8s/helm
+# install cluster apps + marketplace chart
+cd helm
 ./install-apps.sh
-```
 
-### Deploy Application Workloads
-
-Build and push your service images, then apply your Kubernetes manifests (deployments/services/ingress) for:
-
-- `db-customer`
-- `db-product`
-- `backend-sellers`
-- `backend-buyers`
-- `backend-financial`
-
-Verify rollout:
-
-```bash
-kubectl -n pa3 get pods -o wide
-kubectl -n pa3 get svc
-kubectl -n pa3 get ingress
-```
-
-### Cluster Operations
-
-Scale cluster node count:
-
-```bash
-cd k8s
-python gke-cluster.py scale --name pa3-cloud --nodes 19
-```
-
-Delete cluster:
-
-```bash
-cd k8s
-python gke-cluster.py delete --name pa3-cloud
-```
-
-### Benchmark / CLI Against GKE
-
-Run benchmarks and CLI against your ingress/LB endpoint(s):
-
-```bash
-uv run python benchmark.py --scenario 1 --sellers-host <sellers-host> --buyers-host <buyers-host> --sellers-port 80 --buyers-port 80
-uv run python clients/sellers/cli.py --host <sellers-host> --port 80 --help
-uv run python clients/buyers/cli.py --host <buyers-host> --port 80 --help
+# run full benchmark automation from repo root
+cd ..
+./run-pa3-benchmarks-gke.sh
 ```

@@ -1,0 +1,104 @@
+{{- if .Values.dbProduct.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: marketplace-db-product
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: db-product
+spec:
+  serviceName: marketplace-db-product
+  replicas: 5
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: {{ .Values.common.appLabel }}
+      component: db-product
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: {{ .Values.common.appLabel }}
+        component: db-product
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: db-product
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.dbProduct.image.repository }}:{{ .Values.dbProduct.image.tag }}"
+          imagePullPolicy: {{ .Values.dbProduct.image.pullPolicy }}
+          args:
+            - --port
+            - {{ .Values.dbProduct.service.grpcPort | quote }}
+          {{- with .Values.dbProduct.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.dbProduct.service.grpcPort }}
+              protocol: TCP
+            - name: raft
+              containerPort: {{ .Values.dbProduct.service.raftPort }}
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /app/.data
+          {{- with .Values.dbProduct.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dbProduct.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dbProduct.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- with .Values.dbProduct.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.dbProduct.persistence.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.dbProduct.persistence.size }}
+        {{- with .Values.dbProduct.persistence.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+{{- end }}

@@ -1,0 +1,20 @@
+{{- if .Values.backendFinancial.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketplace-backend-financial
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: backend-financial
+spec:
+  type: {{ .Values.backendFinancial.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.backendFinancial.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: {{ .Values.common.appLabel }}
+    component: backend-financial
+{{- end }}

@@ -1,0 +1,94 @@
+{{- if .Values.backendBuyers.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketplace-backend-buyers
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: backend-buyers
+spec:
+  replicas: {{ .Values.backendBuyers.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.common.appLabel }}
+      component: backend-buyers
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: {{ .Values.common.appLabel }}
+        component: backend-buyers
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: backend-buyers
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.backendBuyers.image.repository }}:{{ .Values.backendBuyers.image.tag }}"
+          imagePullPolicy: {{ .Values.backendBuyers.image.pullPolicy }}
+          args:
+            - --port
+            - {{ .Values.backendBuyers.service.port | quote }}
+            - --customer-db-host
+            - {{ index .Values.backendBuyers.args "customer-db-host" | quote }}
+            - --customer-db-port
+            - {{ index .Values.backendBuyers.args "customer-db-port" | quote }}
+            - --product-db-host
+            - {{ index .Values.backendBuyers.args "product-db-host" | quote }}
+            - --product-db-port
+            - {{ index .Values.backendBuyers.args "product-db-port" | quote }}
+            - --financial-wsdl-url
+            - {{ index .Values.backendBuyers.args "financial-wsdl-url" | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backendBuyers.service.port }}
+              protocol: TCP
+          {{- with .Values.backendBuyers.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backendBuyers.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backendBuyers.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backendBuyers.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backendBuyers.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -10,12 +10,16 @@ The benchmark uses REST clients backed by httpx.
 """
 
 import argparse
+import contextlib
 import random
 import statistics
+import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from clients.buyers.client import BuyerClient
@@ -38,6 +42,48 @@ BUYER_OP_WEIGHTS: list[tuple[str, int]] = [
     ("RemoveItemFromCart", 10),
     ("GetBuyerPurchases", 5),
 ]
+
+FAILURE_MODE_CHOICES = (
+    "none",
+    "backend-sellers-buyers",
+    "product-follower",
+    "product-leader",
+)
+FAILURE_PLATFORM_CHOICES = ("compose", "k8s")
+
+
+class _TeeStream:
+    """Write stream output to multiple destinations."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+
+@contextlib.contextmanager
+def maybe_log_to_file(log_file: str | None):
+    """Mirror stdout/stderr to a log file when requested."""
+    if not log_file:
+        yield
+        return
+
+    path = Path(log_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file_stream:
+        stdout_tee = _TeeStream(sys.stdout, file_stream)
+        stderr_tee = _TeeStream(sys.stderr, file_stream)
+        with contextlib.redirect_stdout(stdout_tee), contextlib.redirect_stderr(
+            stderr_tee
+        ):
+            yield
 
 
 def time_request(fn, *args, **kwargs):
@@ -95,6 +141,68 @@ def extract_registered_item_key(payload: dict[str, Any]) -> tuple[int, int] | No
     return None
 
 
+def _run_failure_command_once(
+    *,
+    command: str,
+    delay_sec: float,
+    outcome: dict[str, Any],
+) -> None:
+    time.sleep(max(0.0, delay_sec))
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        outcome["injected"] = True
+        outcome["exit_code"] = completed.returncode
+        if completed.returncode != 0:
+            stderr_text = (completed.stderr or "").strip()
+            stdout_text = (completed.stdout or "").strip()
+            outcome["error"] = stderr_text or stdout_text or "failure command returned non-zero"
+    except Exception as exc:
+        outcome["injected"] = True
+        outcome["error"] = str(exc)
+
+
+def resolve_failure_command(
+    *,
+    failure_mode: str,
+    failure_platform: str,
+    failure_command: str | None,
+) -> str | None:
+    if failure_command:
+        return failure_command
+    if failure_mode == "none":
+        return None
+    if failure_platform == "compose":
+        compose_defaults = {
+            "backend-sellers-buyers": "docker compose kill backend-sellers-1 backend-buyers-1",
+            "product-follower": "docker compose kill db-product-2-1",
+            "product-leader": "docker compose kill db-product-1-1",
+        }
+        return compose_defaults.get(failure_mode)
+    if failure_platform == "k8s":
+        k8s_defaults = {
+            "backend-sellers-buyers": (
+                "kubectl -n default delete pod "
+                "\"$(kubectl -n default get pod -l "
+                "app=marketplace,component=backend-sellers "
+                "-o jsonpath='{.items[0].metadata.name}')\" "
+                "\"$(kubectl -n default get pod -l "
+                "app=marketplace,component=backend-buyers "
+                "-o jsonpath='{.items[0].metadata.name}')\" "
+                "--wait=false"
+            ),
+            "product-follower": "kubectl -n default delete pod marketplace-db-product-1 --wait=false",
+            "product-leader": "kubectl -n default delete pod marketplace-db-product-0 --wait=false",
+        }
+        return k8s_defaults.get(failure_mode)
+    raise ValueError(f"unsupported failure platform: {failure_platform}")
+
+
 @dataclass
 class Stats:
     """Statistics collected during a workload run."""
@@ -105,6 +213,7 @@ class Stats:
     successful_ops: int = 0
     failed_ops: int = 0
     latencies: list[float] = field(default_factory=list)
+    op_latencies: dict[str, list[float]] = field(default_factory=dict)
     start_time: float = 0.0
     end_time: float = 0.0
 
@@ -201,6 +310,7 @@ def run_seller_workload(
                 else:
                     continue
 
+                stats.op_latencies.setdefault(op, []).append(latency)
                 if resp.get("ok"):
                     stats.successful_ops += 1
                     stats.latencies.append(latency)
@@ -260,6 +370,7 @@ def run_buyer_workload(
             stats.total_ops += 1
             try:
                 op_item: tuple[int, int] | None = None
+                op_name = op
 
                 if op == "SearchItemsForSale":
                     category = random.randint(1, 10)
@@ -298,6 +409,7 @@ def run_buyer_workload(
                             quantity=1,
                         )
                     else:
+                        op_name = "SearchItemsForSale"
                         resp, latency = time_request(
                             client.search_items,
                             session_id=session_id,
@@ -317,6 +429,7 @@ def run_buyer_workload(
                             quantity=1,
                         )
                     else:
+                        op_name = "DisplayCart"
                         resp, latency = time_request(client.display_cart, session_id=session_id)
 
                 elif op == "GetBuyerPurchases":
@@ -325,6 +438,7 @@ def run_buyer_workload(
                 else:
                     continue
 
+                stats.op_latencies.setdefault(op_name, []).append(latency)
                 if resp.get("ok"):
                     if op == "AddItemToCart" and op_item is not None:
                         cart_qty[op_item] = cart_qty.get(op_item, 0) + 1
@@ -374,6 +488,12 @@ class RunResult:
     buyer_avg_latency_ms: float = 0.0
     seller_throughput: float = 0.0
     buyer_throughput: float = 0.0
+    per_op_avg_latency_ms: dict[str, float] = field(default_factory=dict)
+    per_op_samples: dict[str, int] = field(default_factory=dict)
+    failure_injected: bool = False
+    failure_delay_sec: float | None = None
+    failure_exit_code: int | None = None
+    failure_error: str | None = None
 
 
 def run_scenario(
@@ -387,6 +507,8 @@ def run_scenario(
     run_number: int,
     ops_per_client: int,
     max_workers: int | None,
+    failure_command: str | None,
+    failure_delay_sec: float,
 ) -> RunResult:
     """Run a single scenario with concurrent sellers and buyers."""
     result = RunResult(
@@ -399,8 +521,22 @@ def run_scenario(
     all_stats: list[Stats] = []
     total_clients = num_sellers + num_buyers
     pool_workers = total_clients if max_workers is None else max(1, min(max_workers, total_clients))
+    failure_outcome: dict[str, Any] = {}
+    failure_thread: threading.Thread | None = None
 
     start_time = time.perf_counter()
+    if failure_command:
+        failure_thread = threading.Thread(
+            target=_run_failure_command_once,
+            kwargs={
+                "command": failure_command,
+                "delay_sec": failure_delay_sec,
+                "outcome": failure_outcome,
+            },
+            name="benchmark-failure-injector",
+            daemon=True,
+        )
+        failure_thread.start()
 
     with ThreadPoolExecutor(max_workers=pool_workers) as executor:
         futures = []
@@ -433,6 +569,13 @@ def run_scenario(
             except Exception as exc:
                 print(f"Workload failed: {exc}", file=sys.stderr)
 
+    if failure_thread is not None:
+        failure_thread.join(timeout=max(1.0, failure_delay_sec + 5.0))
+        result.failure_injected = bool(failure_outcome.get("injected"))
+        result.failure_delay_sec = failure_delay_sec
+        result.failure_exit_code = failure_outcome.get("exit_code")
+        result.failure_error = failure_outcome.get("error")
+
     result.total_duration = time.perf_counter() - start_time
 
     all_latencies: list[float] = []
@@ -442,12 +585,15 @@ def run_scenario(
     seller_duration = 0.0
     buyer_total_ops = 0
     buyer_duration = 0.0
+    per_op_latencies: dict[str, list[float]] = {}
 
     for stats in all_stats:
         result.total_ops += stats.total_ops
         result.successful_ops += stats.successful_ops
         result.failed_ops += stats.failed_ops
         all_latencies.extend(stats.latencies)
+        for op_name, op_values in stats.op_latencies.items():
+            per_op_latencies.setdefault(op_name, []).extend(op_values)
 
         if stats.client_type == "seller":
             seller_latencies.extend(stats.latencies)
@@ -472,6 +618,11 @@ def run_scenario(
     if buyer_latencies:
         result.buyer_avg_latency_ms = statistics.mean(buyer_latencies) * 1000
 
+    for op_name, op_values in per_op_latencies.items():
+        if op_values:
+            result.per_op_samples[op_name] = len(op_values)
+            result.per_op_avg_latency_ms[op_name] = statistics.mean(op_values) * 1000
+
     if result.total_duration > 0:
         result.throughput_ops_per_sec = result.successful_ops / result.total_duration
 
@@ -492,6 +643,23 @@ def print_result(result: RunResult) -> None:
         f"throughput={result.throughput_ops_per_sec:.1f} ops/s, "
         f"duration={result.total_duration:.2f}s"
     )
+    if result.failure_delay_sec is not None:
+        print(
+            f"    Failure injection: injected={result.failure_injected} "
+            f"delay={result.failure_delay_sec:.2f}s exit_code={result.failure_exit_code}"
+        )
+        if result.failure_error:
+            print(f"    Failure injection error: {result.failure_error}")
+    if result.per_op_samples:
+        print("    Client Function Latency:")
+        for op_name in sorted(result.per_op_samples):
+            avg_ms = result.per_op_avg_latency_ms.get(op_name)
+            if avg_ms is None:
+                continue
+            print(
+                f"      {op_name}: {avg_ms:.2f} ms "
+                f"(samples={result.per_op_samples[op_name]})"
+            )
 
 
 def print_summary(results: list[RunResult]) -> None:
@@ -523,6 +691,24 @@ def print_summary(results: list[RunResult]) -> None:
         print(f"    Seller Avg Latency: {statistics.mean(seller_latencies):.2f} ms")
     if buyer_latencies:
         print(f"    Buyer Avg Latency: {statistics.mean(buyer_latencies):.2f} ms")
+
+    per_op_weighted_sum: dict[str, float] = {}
+    per_op_count: dict[str, int] = {}
+    for run_result in results:
+        for op_name, sample_count in run_result.per_op_samples.items():
+            avg_ms = run_result.per_op_avg_latency_ms.get(op_name)
+            if avg_ms is None:
+                continue
+            per_op_weighted_sum[op_name] = per_op_weighted_sum.get(op_name, 0.0) + (
+                avg_ms * sample_count
+            )
+            per_op_count[op_name] = per_op_count.get(op_name, 0) + sample_count
+
+    if per_op_count:
+        print("    Avg Response Time Per Client Function:")
+        for op_name in sorted(per_op_count):
+            avg_ms = per_op_weighted_sum[op_name] / per_op_count[op_name]
+            print(f"      {op_name}: {avg_ms:.2f} ms (samples={per_op_count[op_name]})")
 
 
 def main() -> None:
@@ -597,11 +783,52 @@ Examples:
         default=None,
         help="Optional random seed for reproducibility",
     )
+    parser.add_argument(
+        "--failure-command",
+        default=None,
+        help="Optional shell command to execute once per run to trigger a failure",
+    )
+    parser.add_argument(
+        "--failure-mode",
+        choices=FAILURE_MODE_CHOICES,
+        default="none",
+        help=(
+            "Preset failure mode; if set (and --failure-command is omitted), "
+            "benchmark resolves a default command"
+        ),
+    )
+    parser.add_argument(
+        "--failure-platform",
+        choices=FAILURE_PLATFORM_CHOICES,
+        default="compose",
+        help="Failure preset platform (compose and k8s presets supported)",
+    )
+    parser.add_argument(
+        "--failure-delay-sec",
+        type=float,
+        default=5.0,
+        help="Delay before running --failure-command in each run (default: 5.0)",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="Optional path for benchmark log output (stdout/stderr are mirrored)",
+    )
 
     args = parser.parse_args()
 
     if args.ops_per_client <= 0:
         parser.error("--ops-per-client must be > 0")
+    if args.failure_delay_sec < 0:
+        parser.error("--failure-delay-sec must be >= 0")
+    try:
+        resolved_failure_command = resolve_failure_command(
+            failure_mode=args.failure_mode,
+            failure_platform=args.failure_platform,
+            failure_command=args.failure_command,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -615,47 +842,58 @@ Examples:
     if args.scenario:
         scenarios = {args.scenario: scenarios[args.scenario]}
 
-    print("-" * 50)
-    print("Online Marketplace Benchmark")
-    print("-" * 50)
-    print(f"Sellers server: {args.sellers_host}:{args.sellers_port}")
-    print(f"Buyers server: {args.buyers_host}:{args.buyers_port}")
-    print(f"Operations per client: {args.ops_per_client}")
-    print(f"Runs per scenario: {args.runs}")
-    print(f"Max workers: {args.max_workers if args.max_workers is not None else 'auto'}")
-    if args.seed is not None:
-        print(f"Random seed: {args.seed}")
-    print("-" * 50)
-
-    for scenario_num, (num_sellers, num_buyers) in scenarios.items():
+    with maybe_log_to_file(args.log_file):
+        print("-" * 50)
+        print("Online Marketplace Benchmark")
+        print("-" * 50)
+        print(f"Sellers server: {args.sellers_host}:{args.sellers_port}")
+        print(f"Buyers server: {args.buyers_host}:{args.buyers_port}")
+        print(f"Operations per client: {args.ops_per_client}")
+        print(f"Runs per scenario: {args.runs}")
         print(
-            f"\nScenario {scenario_num}: {num_sellers} seller(s) + {num_buyers} buyer(s)"
+            f"Max workers: {args.max_workers if args.max_workers is not None else 'auto'}"
         )
+        print(f"Failure mode: {args.failure_mode} ({args.failure_platform})")
+        if resolved_failure_command:
+            print(
+                f"Failure command: {resolved_failure_command} "
+                f"(delay={args.failure_delay_sec:.2f}s)"
+            )
+        if args.seed is not None:
+            print(f"Random seed: {args.seed}")
         print("-" * 50)
 
-        results: list[RunResult] = []
-
-        for run in range(1, args.runs + 1):
-            result = run_scenario(
-                scenario=scenario_num,
-                num_sellers=num_sellers,
-                num_buyers=num_buyers,
-                sellers_host=args.sellers_host,
-                sellers_port=args.sellers_port,
-                buyers_host=args.buyers_host,
-                buyers_port=args.buyers_port,
-                run_number=run,
-                ops_per_client=args.ops_per_client,
-                max_workers=args.max_workers,
+        for scenario_num, (num_sellers, num_buyers) in scenarios.items():
+            print(
+                f"\nScenario {scenario_num}: {num_sellers} seller(s) + {num_buyers} buyer(s)"
             )
-            results.append(result)
-            print_result(result)
+            print("-" * 50)
 
-        print_summary(results)
+            results: list[RunResult] = []
 
-    print("\n" + "-" * 50)
-    print("Benchmark complete!")
-    print("-" * 50)
+            for run in range(1, args.runs + 1):
+                result = run_scenario(
+                    scenario=scenario_num,
+                    num_sellers=num_sellers,
+                    num_buyers=num_buyers,
+                    sellers_host=args.sellers_host,
+                    sellers_port=args.sellers_port,
+                    buyers_host=args.buyers_host,
+                    buyers_port=args.buyers_port,
+                    run_number=run,
+                    ops_per_client=args.ops_per_client,
+                    max_workers=args.max_workers,
+                    failure_command=resolved_failure_command,
+                    failure_delay_sec=args.failure_delay_sec,
+                )
+                results.append(result)
+                print_result(result)
+
+            print_summary(results)
+
+        print("\n" + "-" * 50)
+        print("Benchmark complete!")
+        print("-" * 50)
 
 
 if __name__ == "__main__":

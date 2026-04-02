@@ -1,0 +1,225 @@
+# Default values for marketplace.
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+common:
+  appLabel: marketplace
+
+imagePullSecrets: []
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+dbCustomer:
+  enabled: true
+  image:
+    repository: ghcr.io/richardr1126/pa3-db-customer
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    grpcPort: 8001
+    sequencerUdpPort: 12001
+  env:
+    - name: CUSTOMER_SEQUENCER_SELF_ID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+    - name: CUSTOMER_SEQUENCER_MEMBERS
+      value: 0=marketplace-db-customer-0.marketplace-db-customer:12001,1=marketplace-db-customer-1.marketplace-db-customer:12001,2=marketplace-db-customer-2.marketplace-db-customer:12001,3=marketplace-db-customer-3.marketplace-db-customer:12001,4=marketplace-db-customer-4.marketplace-db-customer:12001
+    - name: CUSTOMER_SEQUENCER_ENABLED
+      value: "true"
+    - name: CUSTOMER_DB_PATH
+      value: /app/.data/customer.sqlite3
+    - name: CUSTOMER_SEQUENCER_UDP_BIND_HOST
+      value: 0.0.0.0
+    - name: CUSTOMER_SEQUENCER_UDP_BIND_PORT
+      value: "12001"
+    - name: CUSTOMER_SEQUENCER_COMMAND_TIMEOUT_SEC
+      value: "10.0"
+    - name: CUSTOMER_SEQUENCER_RETRY_SEC
+      value: "0.05"
+    - name: CUSTOMER_SEQUENCER_DROP_PROB
+      value: "0.0001"
+  persistence:
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+    storageClassName: ""
+    annotations: {}
+  resources: {}
+  livenessProbe:
+    tcpSocket:
+      port: grpc
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    tcpSocket:
+      port: grpc
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+dbProduct:
+  enabled: true
+  image:
+    repository: ghcr.io/richardr1126/pa3-db-product
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    grpcPort: 11301
+    raftPort: 11001
+  env:
+    - name: POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: RAFT_SELF_ADDR
+      value: "$(POD_NAME).marketplace-db-product:11001"
+    - name: RAFT_PARTNER_ADDRS
+      value: marketplace-db-product-0.marketplace-db-product:11001,marketplace-db-product-1.marketplace-db-product:11001,marketplace-db-product-2.marketplace-db-product:11001,marketplace-db-product-3.marketplace-db-product:11001,marketplace-db-product-4.marketplace-db-product:11001
+    - name: RAFT_COMMAND_TIMEOUT_SEC
+      value: "3.0"
+    - name: PERSISTENCE_DIR
+      value: /app/.data
+  persistence:
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+    storageClassName: ""
+    annotations: {}
+  resources: {}
+  livenessProbe:
+    tcpSocket:
+      port: grpc
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 8
+  readinessProbe:
+    tcpSocket:
+      port: grpc
+    initialDelaySeconds: 8
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+backendFinancial:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/richardr1126/pa3-backend-financial
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8005
+  env: []
+  envFrom: []
+  resources: {}
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+backendSellers:
+  enabled: true
+  replicaCount: 4
+  image:
+    repository: ghcr.io/richardr1126/pa3-backend-sellers
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8003
+  args:
+    customer-db-host: marketplace-db-customer-0.marketplace-db-customer,marketplace-db-customer-1.marketplace-db-customer,marketplace-db-customer-2.marketplace-db-customer,marketplace-db-customer-3.marketplace-db-customer,marketplace-db-customer-4.marketplace-db-customer
+    customer-db-port: 8001
+    product-db-host: marketplace-db-product-0.marketplace-db-product:11301,marketplace-db-product-1.marketplace-db-product:11301,marketplace-db-product-2.marketplace-db-product:11301,marketplace-db-product-3.marketplace-db-product:11301,marketplace-db-product-4.marketplace-db-product:11301
+    product-db-port: 11301
+  env: []
+  envFrom: []
+  resources: {}
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+backendBuyers:
+  enabled: true
+  replicaCount: 4
+  image:
+    repository: ghcr.io/richardr1126/pa3-backend-buyers
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8004
+  args:
+    customer-db-host: marketplace-db-customer-0.marketplace-db-customer,marketplace-db-customer-1.marketplace-db-customer,marketplace-db-customer-2.marketplace-db-customer,marketplace-db-customer-3.marketplace-db-customer,marketplace-db-customer-4.marketplace-db-customer
+    customer-db-port: 8001
+    product-db-host: marketplace-db-product-0.marketplace-db-product:11301,marketplace-db-product-1.marketplace-db-product:11301,marketplace-db-product-2.marketplace-db-product:11301,marketplace-db-product-3.marketplace-db-product:11301,marketplace-db-product-4.marketplace-db-product:11301
+    product-db-port: 11301
+    financial-wsdl-url: http://marketplace-backend-financial:8005/?wsdl
+  env: []
+  envFrom: []
+  resources: {}
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6

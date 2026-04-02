@@ -27,8 +27,8 @@ zone_operations_client = compute_v1.ZoneOperationsClient(credentials=credentials
 DEFAULT_CLUSTER_NAME = "pa3-cloud"
 ZONE = "us-central1-b"  # Single zone for cost savings
 REGION = ZONE.rsplit("-", 1)[0]
-MACHINE_TYPES = ("e2-standard-2", "t2d-standard-2", "n2d-standard-2")
-DEFAULT_NODE_POOL_SIZES = [7, 6, 6]  # pool-1, pool-2, pool-3
+MACHINE_TYPES = ("e2-small", "n2d-highcpu-2")
+DEFAULT_NODE_POOL_SIZES = [10, 9]  # pool-1, pool-2
 DISK_SIZE_GB = 30
 DISK_TYPE = "pd-standard"  # Standard persistent disk (cheapest)
 TOTAL_INITIAL_NODES = sum(DEFAULT_NODE_POOL_SIZES)
@@ -157,7 +157,7 @@ def create_gke_cluster(cluster_name, enable_spot=True):
         print(f"\n📍 Cluster Configuration:")
         print(f"   Project: {project}")
         print(f"   Zone: {ZONE}")
-        print(f"\n🖥️  Generic Node Pools (quota spread across VM families):")
+        print(f"\n🖥️  Generic Node Pools:")
         pool_node_counts = DEFAULT_NODE_POOL_SIZES
         node_pools = []
         for i, machine_type in enumerate(MACHINE_TYPES):
@@ -319,7 +319,8 @@ def create_gke_cluster(cluster_name, enable_spot=True):
         
         print(f"\n💡 Important Notes:")
         print(f"   • Node pools are generic (not task-specific)")
-        print(f"   • VM families are mixed to help avoid single-family quota exhaustion")
+        print(f"   • Pool machine types: e2-small and n2d-highcpu-2")
+        print(f"   • e2-medium is available as a manual fallback if quotas change")
         print(f"   • Target replicas across services: 19 (5+5+4+4+1)")
         print(f"   • Nodes use private IPs only (no external IP quota needed)")
         print(f"   • Cloud NAT provides outbound internet access")

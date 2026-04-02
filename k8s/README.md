@@ -5,24 +5,21 @@ This folder is a simplified GKE setup for this project's services.
 ## Included
 
 - `gke-cluster.py`: small cluster lifecycle manager (`create`, `list`, `scale`, `delete`)
-- `helm/install-apps.sh`: installs only:
-  - Cloudflare token secret
-  - ExternalDNS
-  - Traefik (Ingress controller with LoadBalancer service)
+- `helm/install-apps.sh`: installs only the Marketplace chart (`helm/marketplace`)
 
 CockroachDB and other task-specific components are intentionally not included.
 
 ## Node Pool Strategy
 
-The cluster uses multiple generic node pools with different machine families to reduce the chance of hitting one specific machine-family quota.
+The cluster uses two fixed generic node pools chosen for lower cost.
 
 Default pools:
 
-- `pool-1`: `e2-standard-2`
-- `pool-2`: `t2d-standard-2`
-- `pool-3`: `n2d-standard-2`
+- `pool-1`: `e2-small`
+- `pool-2`: `n2d-highcpu-2`
 
-Default total node count is `19`, using a fixed pool split of `7/6/6`, matching your current target service replicas.
+Default total node count is `19`, using a fixed pool split of `10/9`, matching your target service replicas.
+If quota changes later, use `e2-medium` manually as the fallback option.
 
 Your service target is `19` total replicas, so `19` nodes gives near one-pod-per-node placement.
 
@@ -49,10 +46,10 @@ uv sync --all-groups
 
 ```bash
 # from k8s/
-python gke-cluster.py create --name pa3-cloud
+uv run python gke-cluster.py create --name pa3-cloud
 ```
 
-Create uses fixed node pool sizes from the script (`7/6/6`).
+Create uses fixed node pool sizes from the script (`10/9`).
 
 ## Connect kubectl
 
@@ -63,13 +60,7 @@ kubectl get nodes
 
 ## Install Cluster Apps (Helm)
 
-The file `helm/.env` is expected and should contain at least:
-
-```bash
-CLOUDFLARE_API_TOKEN=...
-```
-
-Install external-dns + secret + traefik:
+Install marketplace chart:
 
 ```bash
 cd helm
@@ -101,13 +92,21 @@ docker push $REGISTRY/pa3-backend-sellers:$TAG
 docker push $REGISTRY/pa3-backend-buyers:$TAG
 ```
 
-Apply your workload manifests after image push (example):
+`install-apps.sh` now also deploys the marketplace Helm chart. If you need to re-deploy
+after pushing new images or changing chart values:
 
 ```bash
-kubectl apply -f <your-manifests-dir>/
-kubectl -n pa3 get pods -o wide
-kubectl -n pa3 get svc
-kubectl -n pa3 get ingress
+cd helm
+
+./marketplace/install.sh
+
+# or via Helm directly:
+helm upgrade --install marketplace ./marketplace \
+  --namespace default \
+  -f ./marketplace/custom-values.yaml
+
+kubectl -n default get pods -o wide
+kubectl -n default get svc
 ```
 
 ## Scale Cluster
@@ -115,17 +114,32 @@ kubectl -n pa3 get ingress
 Scale all pools by total node target:
 
 ```bash
-python gke-cluster.py scale --name pa3-cloud --nodes 19
+uv run python gke-cluster.py scale --name pa3-cloud --nodes 19
 ```
 
 Scale one pool:
 
 ```bash
-python gke-cluster.py scale --name pa3-cloud --pool pool-2 --nodes 7
+uv run python gke-cluster.py scale --name pa3-cloud --pool pool-2 --nodes 7
 ```
 
 ## Delete Cluster
 
 ```bash
-python gke-cluster.py delete --name pa3-cloud
+uv run python gke-cluster.py delete --name pa3-cloud
 ```
+
+## End-to-End Benchmark Automation
+
+From repo root, run:
+
+```bash
+./run-pa3-benchmarks-gke.sh
+```
+
+This script creates/connects the cluster, runs `helm/install-apps.sh`,
+uses `helm/reinstall-marketplace.sh` between benchmark cases, and executes all
+PA3 scenario/failure combinations with logs under
+`benchmark-results/<timestamp>/`.
+
+This script is intentionally fixed/deterministic and tears down the cluster at completion by default.

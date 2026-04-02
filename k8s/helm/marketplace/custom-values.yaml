@@ -1,0 +1,55 @@
+# Prefer spreading marketplace pods across nodes first (soft anti-affinity).
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app: marketplace
+
+dbCustomer:
+  resources:
+    requests:
+      cpu: 600m
+      memory: 768Mi
+    limits:
+      cpu: "1400m"
+      memory: 1400Mi
+
+dbProduct:
+  resources:
+    requests:
+      cpu: 600m
+      memory: 768Mi
+    limits:
+      cpu: "1400m"
+      memory: 1400Mi
+
+backendSellers:
+  resources:
+    requests:
+      cpu: 400m
+      memory: 512Mi
+    limits:
+      cpu: "1200m"
+      memory: 1Gi
+
+backendBuyers:
+  resources:
+    requests:
+      cpu: 400m
+      memory: 512Mi
+    limits:
+      cpu: "1200m"
+      memory: 1Gi
+
+backendFinancial:
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "600m"
+      memory: 512Mi

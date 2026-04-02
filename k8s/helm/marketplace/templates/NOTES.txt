@@ -1,0 +1,15 @@
+Marketplace services deployed.
+
+Services:
+- Sellers: marketplace-backend-sellers.default.svc.cluster.local:{{ .Values.backendSellers.service.port }}
+- Buyers: marketplace-backend-buyers.default.svc.cluster.local:{{ .Values.backendBuyers.service.port }}
+- Financial: marketplace-backend-financial.default.svc.cluster.local:{{ .Values.backendFinancial.service.port }}
+
+DB StatefulSets:
+- marketplace-db-customer replicas: 5
+- marketplace-db-product replicas: 5
+
+Port forward examples:
+- kubectl -n {{ .Release.Namespace }} port-forward svc/marketplace-backend-sellers {{ .Values.backendSellers.service.port }}:{{ .Values.backendSellers.service.port }}
+- kubectl -n {{ .Release.Namespace }} port-forward svc/marketplace-backend-buyers {{ .Values.backendBuyers.service.port }}:{{ .Values.backendBuyers.service.port }}
+- kubectl -n {{ .Release.Namespace }} port-forward svc/marketplace-backend-financial {{ .Values.backendFinancial.service.port }}:{{ .Values.backendFinancial.service.port }}

@@ -1,0 +1,104 @@
+{{- if .Values.dbCustomer.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: marketplace-db-customer
+  labels:
+    {{- include "marketplace.labels" . | nindent 4 }}
+    app: {{ .Values.common.appLabel }}
+    component: db-customer
+spec:
+  serviceName: marketplace-db-customer
+  replicas: 5
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: {{ .Values.common.appLabel }}
+      component: db-customer
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: {{ .Values.common.appLabel }}
+        component: db-customer
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: db-customer
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.dbCustomer.image.repository }}:{{ .Values.dbCustomer.image.tag }}"
+          imagePullPolicy: {{ .Values.dbCustomer.image.pullPolicy }}
+          args:
+            - --port
+            - {{ .Values.dbCustomer.service.grpcPort | quote }}
+          {{- with .Values.dbCustomer.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.dbCustomer.service.grpcPort }}
+              protocol: TCP
+            - name: sequencer
+              containerPort: {{ .Values.dbCustomer.service.sequencerUdpPort }}
+              protocol: UDP
+          volumeMounts:
+            - name: data
+              mountPath: /app/.data
+          {{- with .Values.dbCustomer.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dbCustomer.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.dbCustomer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- with .Values.dbCustomer.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.dbCustomer.persistence.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.dbCustomer.persistence.size }}
+        {{- with .Values.dbCustomer.persistence.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+{{- end }}
