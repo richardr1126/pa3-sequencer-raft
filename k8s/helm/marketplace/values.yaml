@@ -32,7 +32,7 @@ dbCustomer:
   image:
     repository: ghcr.io/richardr1126/pa3-db-customer
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     grpcPort: 8001
     sequencerUdpPort: 12001
@@ -84,7 +84,7 @@ dbProduct:
   image:
     repository: ghcr.io/richardr1126/pa3-db-product
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     grpcPort: 11301
     raftPort: 11001
@@ -129,7 +129,7 @@ backendFinancial:
   image:
     repository: ghcr.io/richardr1126/pa3-backend-financial
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     type: ClusterIP
     port: 8005
@@ -159,7 +159,7 @@ backendSellers:
   image:
     repository: ghcr.io/richardr1126/pa3-backend-sellers
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     type: ClusterIP
     port: 8003
@@ -200,7 +200,7 @@ backendBuyers:
   image:
     repository: ghcr.io/richardr1126/pa3-backend-buyers
     tag: latest
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     type: ClusterIP
     port: 8004
