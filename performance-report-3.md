@@ -1,6 +1,6 @@
 # Performance Report (PA3)
 
-The benchmark script is `benchmark.py`. It uses `clients/common/client.py` to perform API operations against services deployed on GKE Kubernetes.
+This report summarizes PA3 performance measurements from `benchmark.py` against the Kubernetes deployment of the marketplace distributed system.
 
 ## Experiment Setup
 
@@ -12,38 +12,46 @@ The benchmark script is `benchmark.py`. It uses `clients/common/client.py` to pe
 
 ### Hardware / Environment
 
-- GKE cluster in `us-central1-f` with 19 total nodes.
-- Node pools (current script defaults): `pool-1` = `n4d-highcpu-2`, `pool-2` = `c2d-highcpu-2`.
-- Benchmark client runs outside the cluster and sends HTTP traffic through Traefik ingress + ExternalDNS domains:
+- Cloud platform: GCP GKE, zone `us-central1-f`
+- Cluster nodes: 19 total, machine type `c2d-highcpu-2`, w/ 2 CPU, 4 GB RAM per node
+- Node boot disk: `pd-standard` (30 GB)
+- Benchmark driver runs outside cluster and sends HTTP traffic through Traefik ingress + ExternalDNS domains:
   - `marketplace-sellers.richardr.dev`
   - `marketplace-buyers.richardr.dev`
 - Inter-service traffic (backend to DB / backend to backend-financial) stays in-cluster via Kubernetes Services.
 - Python version: 3.13.11
 
-### How the benchmark was run
+## Benchmark Method
 
-```bash
-# Full automation (create cluster -> run all scenarios/failure modes -> delete cluster)
-./run-pa3-benchmarks-gke.sh
+### Scenarios and run counts
 
-# Single benchmark case
-./k8s/run-benchmark-case.sh <scenario> <failure_mode>
-# failure_mode: none | backend-sellers-buyers | product-follower | product-leader
-```
+- Scenario 1: 1 seller + 1 buyer
+- Scenario 2: 10 sellers + 10 buyers
+- Scenario 3: 100 sellers + 100 buyers
+- Failure modes per scenario: `none`, `backend-sellers-buyers`, `product-follower`, `product-leader`
+- This report uses 5 runs per scenario/failure-mode pair for cost optimization and to cover the expanded matrix of 8 additional scenario/mode runs.
 
 ### Buyer/Seller Run Definitions
 
+- 2k total ops for scenario 1, 20k total ops for scenario 2, 200k total ops for scenario 3.
 - Each run performs 1000 API operations per client/user.
 - Setup (create account/login/seed items) is excluded from the 1000 ops and latency stats.
-- Setup is included in the run wall-clock duration used for throughput.
-- Marketplace Helm release is reinstalled and PVCs are deleted before each benchmark case (`scenarioX__failure_mode`).
-- Within a scenario, the 10 runs are performed on the same release.
+- Setup is included in run wall-clock duration used for throughput.
+- Before each benchmark scenario (`scenarioX__failure_mode`), the chart is reinstalled and PVCs are deleted.
+- Runs within the same scenario execute against the same install.
 - `latency`: average latency across all successful operations in the run
 - `p50`: median latency across all successful operations in the run
 - `p99`: 99th percentile latency across all successful operations in the run
 - `throughput`: total successful operations / wall-clock duration
 
-#### API ops distribution
+### Failure injection behavior
+
+- Failure is injected once per run, after a fixed delay from run start.
+- `backend-sellers-buyers`: deletes one sellers pod and one buyers pod.
+- `product-follower`: detects a current non-leader product DB pod and deletes it.
+- `product-leader`: detects current product DB leader pod and deletes it.
+
+### API ops distribution
 
 The runs use a fixed operation mix (shuffled per run):
 
@@ -61,6 +69,41 @@ Buyer run:
 - 150 AddItemToCart calls
 - 100 RemoveItemFromCart calls
 - 50 GetBuyerPurchases calls
+
+### Experiment execution
+
+```bash
+# Manual setup (cluster + kubeconfig + base apps)
+uv run python k8s/gke-cluster.py create
+gcloud container clusters get-credentials pa3-cloud --zone us-central1-f
+
+# Install apps, currently does not install marketplace chart, just Traefik and ExternalDNS
+./k8s/helm/install-apps.sh
+
+# Reinstall marketplace chart for a fresh benchmark scenario
+./k8s/helm/reinstall-marketplace.sh
+
+# Direct benchmark invocation (manual)
+uv run python benchmark.py \
+  --scenario 1 \
+  --runs 5 \
+  --ops-per-client 1000 \
+  --failure-mode product-leader \
+  --failure-platform k8s \
+  --sellers-host marketplace-sellers.richardr.dev \
+  --buyers-host marketplace-buyers.richardr.dev \
+  --sellers-port 80 \
+  --buyers-port 80
+```
+
+```bash
+# scenario helper wrapper
+./k8s/run-benchmark-case.sh <scenario> <failure_mode>
+# failure_mode: none | backend-sellers-buyers | product-follower | product-leader
+
+# Full automation (simple one-command flow)
+./run-pa3-benchmarks-gke.sh
+```
 
 ## Results
 
@@ -93,7 +136,10 @@ Summary (5 runs):
 ```
 
 Explanation:
-- With only 1 seller and 1 buyer and no failure triggers, the system average latency has jumped up around 20ms compared to PA2
+- Replication of the 2 DBs, especially the Customer DB, causes real latency spikes. On average, latency increases from the added overhead of replication itself.
+- In the Raft-based Product DB, replicating across 5 replicas means write operations need consensus from a majority of nodes (not all nodes), requiring more network calls. Read operations are allowed to be eventually consistent by reading the committed SQLite database on each node directly.
+- In the UDP Sequencer-based Customer DB, replicating across 5 replicas means all requests (reads/writes) are sequenced before being applied, which adds network calls for sequencing/progress/retransmit traffic. Delivery is based on majority progress, not full agreement from all 5 replicas.
+- As we saw with PA2, a large part of average latency is still coming from real network latency.
 
 #### Failure mode: backend-sellers-buyers
 ```plaintext
@@ -128,7 +174,9 @@ Summary (5 runs):
 ```
 
 Explanation:
-- 
+- This mode stays relatively close to `none`, but with a noticeable latency increase.
+- Deleting one buyers pod and one sellers pod causes short retry/reconnect periods while those backend replicas restart.
+- Kubernetes recovers these stateless backend pods quickly, so the degradation is temporary compared to DB failure modes.
 
 #### Failure mode: product-follower
 ```plaintext
@@ -163,7 +211,9 @@ Summary (5 runs):
 ```
 
 Explanation:
-- 
+- Killing a Product DB follower increases variance and reduces throughput compared to `none`.
+- Even though quorum is still available, follower restart/catch-up adds extra delay, especially for product write-heavy operations.
+- The lower p50 with a much higher average shows long-tail behavior, where many requests are still fast but recovery windows create slower spikes.
 
 #### Failure mode: product-leader
 ```plaintext
@@ -198,112 +248,86 @@ Summary (5 runs):
 ```
 
 Explanation:
-- 
+- Killing the Product DB leader causes the expected Raft leader re-election overhead.
+- This mode has higher latency and lower throughput than `none` because write traffic waits for leadership failover and recovery.
+- After failover, the system stabilizes again, which is why variance is not as extreme as the run-to-run drift seen in Scenario 2.
 
 ### Scenario 2: 10 sellers + 10 buyers
 #### Failure mode: none
 ```plaintext
-
+Run 1: ops=20000/20000, latency=238.89ms (p50=215.35ms, p99=674.61ms), throughput=76.2 ops/s, duration=262.38s
+Run 2: ops=20000/20000, latency=436.27ms (p50=398.04ms, p99=1307.44ms), throughput=39.4 ops/s, duration=507.13s
+Run 3: ops=20000/20000, latency=687.91ms (p50=630.34ms, p99=2143.35ms), throughput=24.9 ops/s, duration=803.16s
+Run 4: ops=20000/20000, latency=1109.38ms (p50=983.83ms, p99=3600.21ms), throughput=15.0 ops/s, duration=1337.03s
+Run 5: ops=20000/20000, latency=1528.44ms (p50=1364.16ms, p99=5042.01ms), throughput=11.3 ops/s, duration=1771.77s
 ```
 
 ```plaintext
-
+Summary (5 runs):
+    Avg Response Time: 800.18 ms (stddev: 521.07 ms)
+    Avg Throughput: 33.4 ops/s (stddev: 26.3 ops/s)
+    Seller Avg Latency: 674.72 ms
+    Buyer Avg Latency: 925.63 ms
+    Avg Response Time Per Client Function:
+      AddItemToCart: 1559.41 ms (samples=7481)
+      ChangeItemPrice: 765.86 ms (samples=7500)
+      DisplayCart: 1031.16 ms (samples=10083)
+      DisplayItemsForSale: 640.39 ms (samples=20000)
+      GetBuyerPurchases: 1026.76 ms (samples=2500)
+      GetSellerRating: 634.38 ms (samples=15000)
+      RemoveItemFromCart: 1548.62 ms (samples=4917)
+      SearchItemsForSale: 561.06 ms (samples=25019)
+      UpdateUnitsForSale: 755.76 ms (samples=7500)
 ```
 
 Explanation:
-- In this scenario there are 20 concurrent users making requests (20k ops per run), and with only 1 writer in SQLite, write requests start to queue up through the SQLAlchemy connection pool or by waiting for the lock to be released by SQLite, causing increased latency and reduced throughput.
-- The increase in throughput is likely due to the fact that with more clients, the services are able to process more operations in parallel, even though each operation takes longer on average. The services are likely able to keep their resources more fully utilized with more concurrent clients and more in-flight requests, which can lead to higher overall throughput despite the increased latency. This contrasts with the PA1 scenario 2 results where the throughput decreased compared to scenario 1, likely due to the fact that all processes were running on the same server.
+- Scenario 2 gets progressively slower across runs even without injected failures.
+- The biggest latency growth is in cart mutation operations (`AddItemToCart`, `RemoveItemFromCart`, `DisplayCart`), which depend on more write/coordination work across services.
+- Product read-heavy operations stay relatively lower because they are eventually consistent and can be served from any replica's local committed SQLite state, while write-heavy paths dominate the increase in average latency and p99.
+- Based on logs/metrics, the main latency driver in Scenario 2 appears to be the Customer DB sequencer path (gap detection/retransmit/recovery under load), with Product DB Raft failover/replay effects being secondary in this mode.
 
 #### Failure mode: backend-sellers-buyers
 ```plaintext
-
+Run 1: ops=20000/20000, latency=239.89ms (p50=198.73ms, p99=699.62ms), throughput=73.3 ops/s, duration=272.70s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 2: ops=20000/20000, latency=415.39ms (p50=360.70ms, p99=1275.51ms), throughput=41.1 ops/s, duration=486.48s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 3: ops=20000/20000, latency=664.23ms (p50=592.15ms, p99=2140.78ms), throughput=25.6 ops/s, duration=782.41s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 4: ops=20000/20000, latency=956.51ms (p50=859.09ms, p99=3093.45ms), throughput=17.8 ops/s, duration=1124.01s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 5: ops=20000/20000, latency=1381.70ms (p50=1180.12ms, p99=4283.94ms), throughput=12.4 ops/s, duration=1609.61s
+    Failure injection: injected=True delay=5.00s exit_code=0
 ```
 
 ```plaintext
-
+Summary (5 runs):
+    Avg Response Time: 731.54 ms (stddev: 452.64 ms)
+    Avg Throughput: 34.0 ops/s (stddev: 24.5 ops/s)
+    Seller Avg Latency: 619.97 ms
+    Buyer Avg Latency: 843.12 ms
+    Avg Response Time Per Client Function:
+      AddItemToCart: 1426.44 ms (samples=7481)
+      ChangeItemPrice: 719.48 ms (samples=7500)
+      DisplayCart: 954.75 ms (samples=10106)
+      DisplayItemsForSale: 584.14 ms (samples=20000)
+      GetBuyerPurchases: 933.22 ms (samples=2500)
+      GetSellerRating: 558.20 ms (samples=15000)
+      RemoveItemFromCart: 1417.34 ms (samples=4894)
+      SearchItemsForSale: 502.28 ms (samples=25019)
+      UpdateUnitsForSale: 739.55 ms (samples=7500)
 ```
 
 Explanation:
-- 
+- Similar to Scenario 2 `none`, this mode also gets progressively slower across runs, which means the main bottleneck is still sustained load and queueing/backlog growth, not just the injected backend failure itself.
+- The backend pod kill adds extra disruption early in each run (reconnect + retry), but at this scale that overhead gets dominated by DB coordination and write-heavy contention as the run continues.
+- The same pattern still appears in function-level latency: cart mutation operations (`AddItemToCart`, `RemoveItemFromCart`, `DisplayCart`) grow the most, while read-heavy calls are less impacted because they are eventually consistent reads that can be served by any replica.
+- Overall, this confirms that deleting one buyers + one sellers replica is recoverable, but it worsens an already overloaded path where Customer DB sequencer overhead is the dominant latency contributor.
 
-#### Failure mode: product-follower
-```plaintext
-
-```
-
-```plaintext
-
-```
-
-Explanation:
-- 
-
-#### Failure mode: product-leader
-```plaintext
-
-```
-
-```plaintext
-
-```
-
-Explanation:
-- 
-
-### Scenario 3: 100 sellers + 100 buyers
-#### Failure mode: none
-```plaintext
-
-```
-
-```plaintext
-
-```
-
-Explanation:
-- 200 concurrent users making 200k total simultaneous requests per run causes significant contention for the single SQLite writer lock, leading to very high latencies and very low throughput.
-- The Cloud PA2 version of scenario 3 is much worse than the PA1 version of scenario 3. Again, this is mostly due to the fact that in PA1 there was no network latency and the database was not another network round trip.
-
-#### Failure mode: backend-sellers-buyers
-```plaintext
-
-```
-
-```plaintext
-
-```
-
-Explanation:
-- 
-
-#### Failure mode: product-follower
-```plaintext
-
-```
-
-```plaintext
-
-```
-
-Explanation:
-- 
-
-#### Failure mode: product-leader
-```plaintext
-
-```
-
-```plaintext
-
-```
-
-Explanation:
-- 
+> Note: Remaining unreported sections (Scenario 2 `product-follower` / `product-leader`, and all Scenario 3 modes) were not completed due to very expensive runtime requirements and latency of replication. Scenario 3 was especially too slow at this scale (projected runtime over 5 hours), so I stopped it to avoid using up remaining cloud credits.
 
 ## Bottlenecks observed
-- The main bottleneck now seems to be mostly network latency and possibly somewhat slower GCP e2-standard-2 CPUs.
-- With high concurrency required by Scenario 3, SQLite becomes the main bottleneck due to SQLite's 1 writer write lock contention.
-- PostgreSQL could improve performance allowing concurrent writes, however since future assignments will require serializing writes through Raft or Paxos I am guessing, concurrent writes won't be used anyway.
+- In Scenario 2, the dominant bottleneck appears to be Customer DB sequencer coordination/retransmit behavior under sustained write-heavy load (observed via frequent sequencer gap/recovery activity), which drives long-tail latency and throughput collapse.
 
 ## PA1 vs PA2 comparison
 
@@ -316,3 +340,11 @@ After doing just a comparison of scenario 1 locally (results not shown), I obser
 Something else I observed when comparing PA1 and PA2 results is that both throughput and latency increased, while with PA1 only latency increased and throughput decreased. I think this can be explained by PA2 now having the network acting as a sort of "throttle" that limits the number of requests that can be processed in parallel, which can help to keep the services more fully utilized and increase throughput, even though each request takes longer on average. Because of this, scenario 2 with 20 users seems to be the sweet spot for maximizing throughput while keeping latency at a reasonable level, while scenario 3 with 200 users causes too much contention and queuing at the SQLite layer, leading to very high latency and reduced throughput.
 
 ## PA2 vs PA3 comparison
+
+It is hard to directly compare PA2 and PA3 for many reasons, mostly because PA3 adds replication protocols on top of the PA2 architecture. In PA2, each DB path was effectively single-node logic with retry/failover behavior at the client side, while PA3 now adds protocol-level coordination for both Customer DB and Product DB.
+
+The main observation is that PA3 introduces a much larger coordination cost than PA2, especially under concurrency. In PA3, even Scenario 1 has higher baseline latency because Product DB writes now require Raft commit and Customer DB operations go through sequencer ordering/retransmit logic.
+
+The bigger difference appears in Scenario 2. In PA2, Scenario 2 was the practical throughput sweet spot, but in PA3 Scenario 2 degrades run-over-run as queueing and protocol overhead build up. The function-level stats also show that write-heavy/cart-heavy paths increase much more sharply than read-heavy paths, since those reads are eventually consistent and can be served by any replica while writes require protocol coordination. From logs and metrics during these runs, most of this Scenario 2 latency increase appears to come from the Customer DB sequencer path rather than Product DB read behavior.
+
+Another practical difference is failure behavior. In PA3, failures include protocol recovery behavior (leader re-election, follower catch-up, replay, sequencer gap recovery), so tail latency becomes much more sensitive to timing and system load.

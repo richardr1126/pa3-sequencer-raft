@@ -1,0 +1,94 @@
+--------------------------------------------------
+Online Marketplace Benchmark
+--------------------------------------------------
+Sellers server: marketplace-sellers.richardr.dev:80
+Buyers server: marketplace-buyers.richardr.dev:80
+Operations per client: 1000
+Runs per scenario: 5
+Max workers: auto
+Failure mode: backend-sellers-buyers (k8s)
+Failure command: kubectl -n default delete pod "$(kubectl -n default get pod -l app=marketplace,component=backend-sellers -o jsonpath='{.items[0].metadata.name}')" "$(kubectl -n default get pod -l app=marketplace,component=backend-buyers -o jsonpath='{.items[0].metadata.name}')" --wait=false (delay=5.00s)
+--------------------------------------------------
+
+Scenario 2: 10 seller(s) + 10 buyer(s)
+--------------------------------------------------
+  Run 1: ops=19999/20000, latency=230.79ms (p50=186.53ms, p99=623.52ms), throughput=72.8 ops/s, duration=274.59s
+    Failure injection: injected=True delay=5.00s exit_code=0
+    Client Function Latency:
+      AddItemToCart: 392.25 ms (samples=1495)
+      ChangeItemPrice: 279.01 ms (samples=1500)
+      DisplayCart: 320.46 ms (samples=2027)
+      DisplayItemsForSale: 158.87 ms (samples=4000)
+      GetBuyerPurchases: 253.51 ms (samples=500)
+      GetSellerRating: 155.54 ms (samples=3000)
+      RemoveItemFromCart: 350.32 ms (samples=973)
+      SearchItemsForSale: 192.89 ms (samples=5004)
+      UpdateUnitsForSale: 284.04 ms (samples=1500)
+  Run 2: ops=20000/20000, latency=398.03ms (p50=297.13ms, p99=1345.51ms), throughput=41.5 ops/s, duration=481.55s
+    Failure injection: injected=True delay=5.00s exit_code=0
+    Client Function Latency:
+      AddItemToCart: 715.37 ms (samples=1495)
+      ChangeItemPrice: 411.66 ms (samples=1500)
+      DisplayCart: 571.75 ms (samples=2023)
+      DisplayItemsForSale: 289.26 ms (samples=4000)
+      GetBuyerPurchases: 464.30 ms (samples=500)
+      GetSellerRating: 290.34 ms (samples=3000)
+      RemoveItemFromCart: 738.51 ms (samples=977)
+      SearchItemsForSale: 302.76 ms (samples=5005)
+      UpdateUnitsForSale: 413.31 ms (samples=1500)
+  Run 3: ops=20000/20000, latency=657.66ms (p50=475.02ms, p99=2378.26ms), throughput=25.5 ops/s, duration=784.09s
+    Failure injection: injected=True delay=5.00s exit_code=0
+    Client Function Latency:
+      AddItemToCart: 1275.90 ms (samples=1496)
+      ChangeItemPrice: 633.37 ms (samples=1500)
+      DisplayCart: 849.78 ms (samples=2032)
+      DisplayItemsForSale: 503.52 ms (samples=4000)
+      GetBuyerPurchases: 816.31 ms (samples=500)
+      GetSellerRating: 522.68 ms (samples=3000)
+      RemoveItemFromCart: 1275.53 ms (samples=968)
+      SearchItemsForSale: 477.01 ms (samples=5004)
+      UpdateUnitsForSale: 637.07 ms (samples=1500)
+  Run 4: ops=20000/20000, latency=960.85ms (p50=497.92ms, p99=3813.64ms), throughput=17.7 ops/s, duration=1131.32s
+    Failure injection: injected=True delay=5.00s exit_code=0
+    Client Function Latency:
+      AddItemToCart: 1923.50 ms (samples=1496)
+      ChangeItemPrice: 903.31 ms (samples=1500)
+      DisplayCart: 1238.35 ms (samples=2023)
+      DisplayItemsForSale: 773.02 ms (samples=4000)
+      GetBuyerPurchases: 1161.11 ms (samples=500)
+      GetSellerRating: 770.75 ms (samples=3000)
+      RemoveItemFromCart: 1934.86 ms (samples=977)
+      SearchItemsForSale: 656.86 ms (samples=5004)
+      UpdateUnitsForSale: 878.10 ms (samples=1500)
+  Run 5: ops=20000/20000, latency=1361.24ms (p50=620.19ms, p99=5457.05ms), throughput=12.6 ops/s, duration=1589.20s
+    Failure injection: injected=True delay=5.00s exit_code=0
+    Client Function Latency:
+      AddItemToCart: 2728.95 ms (samples=1494)
+      ChangeItemPrice: 1232.54 ms (samples=1500)
+      DisplayCart: 1783.19 ms (samples=2020)
+      DisplayItemsForSale: 1111.49 ms (samples=4000)
+      GetBuyerPurchases: 1860.61 ms (samples=500)
+      GetSellerRating: 1136.87 ms (samples=3000)
+      RemoveItemFromCart: 2637.95 ms (samples=980)
+      SearchItemsForSale: 893.45 ms (samples=5006)
+      UpdateUnitsForSale: 1234.81 ms (samples=1500)
+
+  Summary (5 runs):
+    Avg Response Time: 721.71 ms (stddev: 451.68 ms)
+    Avg Throughput: 34.0 ops/s (stddev: 24.3 ops/s)
+    Seller Avg Latency: 606.68 ms
+    Buyer Avg Latency: 836.75 ms
+    Avg Response Time Per Client Function:
+      AddItemToCart: 1407.07 ms (samples=7476)
+      ChangeItemPrice: 691.98 ms (samples=7500)
+      DisplayCart: 952.12 ms (samples=10125)
+      DisplayItemsForSale: 567.23 ms (samples=20000)
+      GetBuyerPurchases: 911.17 ms (samples=2500)
+      GetSellerRating: 575.23 ms (samples=15000)
+      RemoveItemFromCart: 1389.26 ms (samples=4875)
+      SearchItemsForSale: 504.62 ms (samples=25023)
+      UpdateUnitsForSale: 689.46 ms (samples=7500)
+
+--------------------------------------------------
+Benchmark complete!
+--------------------------------------------------

@@ -147,7 +147,7 @@ Use the root script to automate:
 - Cluster create/connect (`k8s/gke-cluster.py`, `gcloud get-credentials`)
 - `k8s/helm/install-apps.sh`
 - Marketplace reset helper: `k8s/helm/reinstall-marketplace.sh`
-- Port-forward sellers/buyers services
+- Ingress-based sellers/buyers access via configured domains
 - Full benchmark matrix:
   - Scenarios: `1,2,3`
   - Failure modes: `none`, `backend-sellers-buyers`, `product-follower`, `product-leader`
@@ -157,7 +157,7 @@ Use the root script to automate:
 ./run-pa3-benchmarks-gke.sh
 ```
 
-The script writes per-case logs and a `summary.tsv` under `benchmark-results/<timestamp>/`.
+The script writes per-case logs under `benchmark-results/<timestamp>/` (for example `scenario1__product-leader.log`).
 `run-pa3-benchmarks-gke.sh` is intentionally fixed and deterministic:
 - Uses `pa3-cloud` in `us-central1-f`
 - Runs `10` iterations per case with `1000` ops/client
