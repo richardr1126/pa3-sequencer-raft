@@ -1,6 +1,6 @@
 ## Zip File Contents
 ```bash
-zip -r pa3.zip . -x '.git/*' '.gitignore' '*__pycache__/*' '.venv/*' '*.sqlite3' '*.sqlite3-*' 'pa3.md' 'PA3.pdf' '*.old*' '.env'
+zip -r pa3.zip . -x '.git/*' '.gitignore' '*__pycache__/*' '.venv/*' '*.sqlite3' '*.sqlite3-*' 'pa3.md' 'PA3.pdf' '*.old*' 'k8s/helm/.env'
 ```
 
 # CSCI/ECEN 5673: Distributed Systems Spring 2026
