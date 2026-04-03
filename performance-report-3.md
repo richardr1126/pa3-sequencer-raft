@@ -167,11 +167,34 @@ Explanation:
 
 #### Failure mode: product-leader
 ```plaintext
-
+Run 1: ops=2000/2000, latency=140.07ms (p50=97.22ms, p99=302.84ms), throughput=13.1 ops/s, duration=152.42s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 2: ops=2000/2000, latency=118.86ms (p50=98.33ms, p99=278.87ms), throughput=15.3 ops/s, duration=130.87s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 3: ops=2000/2000, latency=119.45ms (p50=99.77ms, p99=261.50ms), throughput=15.3 ops/s, duration=130.91s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 4: ops=2000/2000, latency=122.83ms (p50=100.86ms, p99=308.22ms), throughput=14.8 ops/s, duration=134.78s
+    Failure injection: injected=True delay=5.00s exit_code=0
+Run 5: ops=2000/2000, latency=122.48ms (p50=102.22ms, p99=256.22ms), throughput=15.1 ops/s, duration=132.66s
+    Failure injection: injected=True delay=5.00s exit_code=0
 ```
 
 ```plaintext
-
+Summary (5 runs):
+    Avg Response Time: 124.74 ms (stddev: 8.75 ms)
+    Avg Throughput: 14.7 ops/s (stddev: 0.9 ops/s)
+    Seller Avg Latency: 135.20 ms
+    Buyer Avg Latency: 114.27 ms
+    Avg Response Time Per Client Function:
+      AddItemToCart: 132.08 ms (samples=734)
+      ChangeItemPrice: 215.12 ms (samples=750)
+      DisplayCart: 117.71 ms (samples=1020)
+      DisplayItemsForSale: 106.04 ms (samples=2000)
+      GetBuyerPurchases: 110.72 ms (samples=250)
+      GetSellerRating: 93.13 ms (samples=1500)
+      RemoveItemFromCart: 130.63 ms (samples=480)
+      SearchItemsForSale: 104.92 ms (samples=2516)
+      UpdateUnitsForSale: 217.18 ms (samples=750)
 ```
 
 Explanation:

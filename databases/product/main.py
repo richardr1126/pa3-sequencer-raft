@@ -9,7 +9,9 @@ import argparse
 import concurrent.futures
 import logging
 import secrets
+import signal
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +37,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+RAFT_STARTUP_REPLAY_RETRY_SEC = 2.0
 
 
 class ProductDbService(product_db_pb2_grpc.ProductDbServiceServicer):
@@ -346,7 +350,23 @@ def run_server(host: str, port: int):
         apply_committed_write_fn=domain_api.apply_committed_write,
     )
     sqlite_last_applied = domain_api.get_last_applied_raft_index()
-    replayed = raft.replay_committed_writes(sqlite_last_applied)
+    retry_count = 0
+    while True:
+        try:
+            replayed = raft.replay_committed_writes(sqlite_last_applied)
+            break
+        except RaftError as exc:
+            if exc.code != "RAFT_NOT_READY":
+                raise
+            retry_count += 1
+            logger.warning(
+                "Product DB waiting for Raft readiness before sqlite replay "
+                "(attempt=%d retry=%.1fs): %s",
+                retry_count,
+                RAFT_STARTUP_REPLAY_RETRY_SEC,
+                exc.message,
+            )
+            time.sleep(RAFT_STARTUP_REPLAY_RETRY_SEC)
     logger.info(
         "Product DB sqlite replay complete: last_applied=%s replayed=%s",
         sqlite_last_applied,
@@ -365,7 +385,23 @@ def run_server(host: str, port: int):
         server.add_insecure_port(f"{host}:{port}")
         server.start()
         logger.info("Product DB gRPC server listening on %s:%s", host, port)
-        server.wait_for_termination()
+
+        def _handle_shutdown(signum, _frame):
+            logger.info("Received signal %s, shutting down Product DB server", signum)
+            try:
+                server.stop(grace=5)
+            except Exception:
+                pass
+
+        prev_sigterm = signal.getsignal(signal.SIGTERM)
+        prev_sigint = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGTERM, _handle_shutdown)
+        signal.signal(signal.SIGINT, _handle_shutdown)
+        try:
+            server.wait_for_termination()
+        finally:
+            signal.signal(signal.SIGTERM, prev_sigterm)
+            signal.signal(signal.SIGINT, prev_sigint)
     finally:
         try:
             service.close()
