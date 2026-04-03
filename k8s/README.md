@@ -11,14 +11,13 @@ CockroachDB and other task-specific components are intentionally not included.
 
 ## Node Pool Strategy
 
-The cluster uses two fixed generic node pools.
+The cluster uses one fixed generic node pool.
 
-Default pools:
+Default pool:
 
-- `pool-1`: `n4d-highcpu-2`
-- `pool-2`: `c2d-highcpu-2`
+- `pool-1`: `c2d-highcpu-2`
 
-Default total node count is `19`, using a fixed pool split of `10/9`, matching your target service replicas.
+Default total node count is `19` in `pool-1`, matching your target service replicas.
 
 Your service target is `19` total replicas, so `19` nodes gives near one-pod-per-node placement.
 
@@ -48,7 +47,7 @@ uv sync --all-groups
 uv run python gke-cluster.py create --name pa3-cloud
 ```
 
-Create uses fixed node pool sizes from the script (`10/9`).
+Create uses a fixed node pool size from the script (`19`).
 
 ## Connect kubectl
 
@@ -119,7 +118,7 @@ uv run python gke-cluster.py scale --name pa3-cloud --nodes 19
 Scale one pool:
 
 ```bash
-uv run python gke-cluster.py scale --name pa3-cloud --pool pool-2 --nodes 7
+uv run python gke-cluster.py scale --name pa3-cloud --pool pool-1 --nodes 7
 ```
 
 ## Delete Cluster

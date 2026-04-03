@@ -1,0 +1,38 @@
+--------------------------------------------------
+Online Marketplace Benchmark
+--------------------------------------------------
+Sellers server: marketplace-sellers.richardr.dev:80
+Buyers server: marketplace-buyers.richardr.dev:80
+Operations per client: 1000
+Runs per scenario: 5
+Max workers: auto
+Failure mode: product-follower (k8s)
+Failure command: kubectl -n default delete pod marketplace-db-product-1 --wait=false (delay=5.00s)
+--------------------------------------------------
+
+Scenario 1: 1 seller(s) + 1 buyer(s)
+--------------------------------------------------
+  Run 1: ops=2000/2000, latency=93.93ms (p50=47.53ms, p99=232.09ms), throughput=18.4 ops/s, duration=108.46s
+    Failure injection: injected=True delay=5.00s exit_code=0
+    Client Function Latency:
+      AddItemToCart: 76.99 ms (samples=140)
+      ChangeItemPrice: 163.05 ms (samples=150)
+      DisplayCart: 60.36 ms (samples=204)
+      DisplayItemsForSale: 93.57 ms (samples=400)
+      GetBuyerPurchases: 63.31 ms (samples=50)
+      GetSellerRating: 40.84 ms (samples=300)
+      RemoveItemFromCart: 74.15 ms (samples=96)
+      SearchItemsForSale: 92.06 ms (samples=510)
+      UpdateUnitsForSale: 222.64 ms (samples=150)
+  Run 2: ops=2000/2000, latency=140.01ms (p50=48.35ms, p99=287.37ms), throughput=12.2 ops/s, duration=164.13s
+    Failure injection: injected=True delay=5.00s exit_code=0
+    Client Function Latency:
+      AddItemToCart: 75.99 ms (samples=142)
+      ChangeItemPrice: 175.01 ms (samples=150)
+      DisplayCart: 257.67 ms (samples=206)
+      DisplayItemsForSale: 247.48 ms (samples=400)
+      GetBuyerPurchases: 62.30 ms (samples=50)
+      GetSellerRating: 43.72 ms (samples=300)
+      RemoveItemFromCart: 76.58 ms (samples=94)
+      SearchItemsForSale: 83.50 ms (samples=508)
+      UpdateUnitsForSale: 167.12 ms (samples=150)

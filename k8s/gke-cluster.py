@@ -27,10 +27,10 @@ zone_operations_client = compute_v1.ZoneOperationsClient(credentials=credentials
 DEFAULT_CLUSTER_NAME = "pa3-cloud"
 ZONE = "us-central1-f"  # Single zone for cost savings
 REGION = ZONE.rsplit("-", 1)[0]
-MACHINE_TYPES = ("n4d-highcpu-2", "c2d-highcpu-2")
-DEFAULT_NODE_POOL_SIZES = [10, 9]  # pool-1, pool-2
+MACHINE_TYPES = ("c2d-highcpu-2",)
+DEFAULT_NODE_POOL_SIZES = [19]  # pool-1
 DISK_SIZE_GB = 30
-DISK_TYPE = "pd-standard"  # Standard persistent disk (cheapest)
+DISK_TYPE = "pd-standard"
 TOTAL_INITIAL_NODES = sum(DEFAULT_NODE_POOL_SIZES)
 
 def create_cloud_nat(cluster_name):
@@ -317,20 +317,10 @@ def create_gke_cluster(cluster_name, enable_spot=False):
         print(f"\n   # Scale to 0 to save money")
         print(f"   python gke-cluster.py scale --name {cluster_name} --nodes 0")
         
-        print(f"\n💡 Important Notes:")
-        print(f"   • Node pools are generic (not task-specific)")
-        print(f"   • Pool machine types: n4d-highcpu-2 and c2d-highcpu-2")
-        print(f"   • Target replicas across services: 19 (5+5+4+4+1)")
-        print(f"   • Nodes use private IPs only (no external IP quota needed)")
-        print(f"   • Cloud NAT provides outbound internet access")
-        print(f"   • Install base apps with: cd helm && ./install-apps.sh")
-        print(f"   • Deploy workloads with: cd helm && ./marketplace/install.sh")
-        
         print(f"\n{'='*70}")
         print(f"💡 Capacity Notes")
         print(f"{'='*70}")
         print(f"   • Started with {TOTAL_INITIAL_NODES} total nodes across {len(MACHINE_TYPES)} pools")
-        print(f"   • Scale toward 19 nodes if quota allows near one-replica-per-node placement")
         print(f"   • Spot instances are disabled by default for benchmark stability")
         print(f"   • Use --spot if you explicitly want lower-cost preemptible nodes")
         print(f"\n{'='*70}")

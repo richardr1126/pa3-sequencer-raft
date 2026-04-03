@@ -49,7 +49,7 @@ wait_for_ingress "buyers" "http://${BUYERS_HOST}:${BUYERS_PORT}/healthz"
 set +e
 uv run python benchmark.py \
   --scenario "${SCENARIO}" \
-  --runs 10 \
+  --runs 5 \
   --ops-per-client 1000 \
   --sellers-host "${SELLERS_HOST}" \
   --sellers-port "${SELLERS_PORT}" \

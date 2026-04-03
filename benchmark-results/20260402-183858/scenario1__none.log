@@ -1,0 +1,88 @@
+--------------------------------------------------
+Online Marketplace Benchmark
+--------------------------------------------------
+Sellers server: marketplace-sellers.richardr.dev:80
+Buyers server: marketplace-buyers.richardr.dev:80
+Operations per client: 1000
+Runs per scenario: 5
+Max workers: auto
+Failure mode: none (k8s)
+--------------------------------------------------
+
+Scenario 1: 1 seller(s) + 1 buyer(s)
+--------------------------------------------------
+  Run 1: ops=2000/2000, latency=67.82ms (p50=47.12ms, p99=257.98ms), throughput=24.5 ops/s, duration=81.61s
+    Client Function Latency:
+      AddItemToCart: 76.02 ms (samples=139)
+      ChangeItemPrice: 163.41 ms (samples=150)
+      DisplayCart: 59.65 ms (samples=203)
+      DisplayItemsForSale: 44.54 ms (samples=400)
+      GetBuyerPurchases: 54.32 ms (samples=50)
+      GetSellerRating: 41.55 ms (samples=300)
+      RemoveItemFromCart: 72.80 ms (samples=97)
+      SearchItemsForSale: 44.24 ms (samples=511)
+      UpdateUnitsForSale: 171.89 ms (samples=150)
+  Run 2: ops=2000/2000, latency=70.09ms (p50=48.86ms, p99=262.60ms), throughput=24.0 ops/s, duration=83.38s
+    Client Function Latency:
+      AddItemToCart: 79.03 ms (samples=144)
+      ChangeItemPrice: 170.71 ms (samples=150)
+      DisplayCart: 65.43 ms (samples=209)
+      DisplayItemsForSale: 46.57 ms (samples=400)
+      GetBuyerPurchases: 59.44 ms (samples=50)
+      GetSellerRating: 42.43 ms (samples=300)
+      RemoveItemFromCart: 75.93 ms (samples=91)
+      SearchItemsForSale: 44.61 ms (samples=506)
+      UpdateUnitsForSale: 171.44 ms (samples=150)
+  Run 3: ops=2000/2000, latency=71.41ms (p50=50.63ms, p99=216.66ms), throughput=24.2 ops/s, duration=82.60s
+    Client Function Latency:
+      AddItemToCart: 82.10 ms (samples=149)
+      ChangeItemPrice: 168.10 ms (samples=150)
+      DisplayCart: 70.07 ms (samples=203)
+      DisplayItemsForSale: 45.97 ms (samples=400)
+      GetBuyerPurchases: 62.56 ms (samples=50)
+      GetSellerRating: 45.43 ms (samples=300)
+      RemoveItemFromCart: 80.50 ms (samples=97)
+      SearchItemsForSale: 47.12 ms (samples=501)
+      UpdateUnitsForSale: 163.87 ms (samples=150)
+  Run 4: ops=2000/2000, latency=73.76ms (p50=52.55ms, p99=255.78ms), throughput=23.3 ops/s, duration=85.73s
+    Client Function Latency:
+      AddItemToCart: 84.23 ms (samples=146)
+      ChangeItemPrice: 173.48 ms (samples=150)
+      DisplayCart: 71.60 ms (samples=210)
+      DisplayItemsForSale: 48.40 ms (samples=400)
+      GetBuyerPurchases: 64.46 ms (samples=50)
+      GetSellerRating: 47.17 ms (samples=300)
+      RemoveItemFromCart: 87.22 ms (samples=90)
+      SearchItemsForSale: 47.89 ms (samples=504)
+      UpdateUnitsForSale: 169.62 ms (samples=150)
+  Run 5: ops=2000/2000, latency=74.91ms (p50=52.96ms, p99=268.89ms), throughput=22.8 ops/s, duration=87.76s
+    Client Function Latency:
+      AddItemToCart: 88.91 ms (samples=136)
+      ChangeItemPrice: 178.03 ms (samples=150)
+      DisplayCart: 69.53 ms (samples=213)
+      DisplayItemsForSale: 48.96 ms (samples=400)
+      GetBuyerPurchases: 65.25 ms (samples=50)
+      GetSellerRating: 46.46 ms (samples=300)
+      RemoveItemFromCart: 86.01 ms (samples=87)
+      SearchItemsForSale: 49.07 ms (samples=514)
+      UpdateUnitsForSale: 178.16 ms (samples=150)
+
+  Summary (5 runs):
+    Avg Response Time: 71.60 ms (stddev: 2.84 ms)
+    Avg Throughput: 23.8 ops/s (stddev: 0.7 ops/s)
+    Seller Avg Latency: 83.40 ms
+    Buyer Avg Latency: 59.80 ms
+    Avg Response Time Per Client Function:
+      AddItemToCart: 82.03 ms (samples=714)
+      ChangeItemPrice: 170.75 ms (samples=750)
+      DisplayCart: 67.30 ms (samples=1038)
+      DisplayItemsForSale: 46.89 ms (samples=2000)
+      GetBuyerPurchases: 61.21 ms (samples=250)
+      GetSellerRating: 44.61 ms (samples=1500)
+      RemoveItemFromCart: 80.33 ms (samples=462)
+      SearchItemsForSale: 46.59 ms (samples=2536)
+      UpdateUnitsForSale: 171.00 ms (samples=750)
+
+--------------------------------------------------
+Benchmark complete!
+--------------------------------------------------

@@ -209,8 +209,16 @@ def resolve_failure_command(
                 "-o jsonpath='{.items[0].metadata.name}')\" "
                 "--wait=false"
             ),
-            "product-follower": "kubectl -n default delete pod marketplace-db-product-1 --wait=false",
-            "product-leader": "kubectl -n default delete pod marketplace-db-product-0 --wait=false",
+            "product-follower": (
+                "kubectl -n default delete pod "
+                "\"$(./k8s/select-product-raft-pod.sh follower default)\" "
+                "--wait=false"
+            ),
+            "product-leader": (
+                "kubectl -n default delete pod "
+                "\"$(./k8s/select-product-raft-pod.sh leader default)\" "
+                "--wait=false"
+            ),
         }
         return k8s_defaults.get(failure_mode)
     raise ValueError(f"unsupported failure platform: {failure_platform}")
