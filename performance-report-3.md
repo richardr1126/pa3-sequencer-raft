@@ -324,7 +324,7 @@ Explanation:
 - The same pattern still appears in function-level latency: cart mutation operations (`AddItemToCart`, `RemoveItemFromCart`, `DisplayCart`) grow the most, while read-heavy calls are less impacted because they are eventually consistent reads that can be served by any replica.
 - Overall, this confirms that deleting one buyers + one sellers replica is recoverable, but it worsens an already overloaded path where Customer DB sequencer overhead is the dominant latency contributor.
 
-> Note: Remaining unreported sections (Scenario 2 `product-follower` / `product-leader`, and all Scenario 3 modes) were not completed due to very expensive runtime requirements and latency of replication. Scenario 3 was especially too slow at this scale (projected runtime over 5 hours), so I stopped it to avoid using up remaining cloud credits.
+> Note: Remaining unreported sections (Scenario 2 `product-follower` / `product-leader`, and all Scenario 3 modes) were not completed due to very expensive runtime requirements and latency of replication. Scenario 3 was especially too slow at this scale, so I stopped it to avoid using up remaining cloud credits.
 
 ## Bottlenecks observed
 - In Scenario 2, the dominant bottleneck appears to be Customer DB sequencer coordination/retransmit behavior under sustained write-heavy load (observed via frequent sequencer gap/recovery activity), which drives long-tail latency and throughput collapse.
