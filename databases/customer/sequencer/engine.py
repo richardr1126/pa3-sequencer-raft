@@ -261,6 +261,7 @@ class CustomerSequencerEngine:
                 request_local_seq=missing_local,
                 now=now,
             )
+        self._state.reset_request_retransmit(req_sender_id, req_local_seq)
         key = (req_sender_id, req_local_seq)
         if key in self._logged_missing_requests:
             self._logged_missing_requests.remove(key)
@@ -325,6 +326,7 @@ class CustomerSequencerEngine:
                     global_seq=missing_seq,
                     now=now,
                 )
+        self._state.reset_sequence_retransmit(global_seq)
         if global_seq in self._logged_missing_sequences:
             self._logged_missing_sequences.remove(global_seq)
             self._log.info(
@@ -458,14 +460,14 @@ class CustomerSequencerEngine:
                 retransmit_messages = collect_missing_sequence_retransmits(
                     state=self._state,
                     member_count=self._member_count,
-                    retry_interval_sec=self.config.retransmit_retry_sec,
+                    config=self.config,
                     now_monotonic=now,
                     self_id=self.config.self_id,
                 )
                 retransmit_messages.extend(
                     collect_missing_request_retransmits(
                         state=self._state,
-                        retry_interval_sec=self.config.retransmit_retry_sec,
+                        config=self.config,
                         now_monotonic=now,
                         self_id=self.config.self_id,
                     )
@@ -520,6 +522,15 @@ class CustomerSequencerEngine:
                     result=result,
                     error=error,
                 )
+                # Compact periodically to keep sequencer history bounded.
+                if (
+                    self.config.gc_every_deliveries > 0
+                    and global_seq % self.config.gc_every_deliveries == 0
+                ):
+                    self._state.compact_delivered_state(
+                        retain_global_sequences=4096,
+                        retain_sender_locals=4096,
+                    )
 
     def _send_retransmit_request_locked(
         self,
@@ -529,12 +540,14 @@ class CustomerSequencerEngine:
         request_local_seq: int,
         now: float,
     ) -> None:
-        key = (request_sender_id, request_local_seq)
-        last = self._state.last_retransmit_request_at.get(key, 0.0)
-        if now - last < self.config.retransmit_retry_sec:
+        if not self._state.schedule_request_retransmit(
+            sender_id=request_sender_id,
+            local_seq=request_local_seq,
+            now_monotonic=now,
+            retry_interval_sec=self.config.retransmit_retry_sec,
+        ):
             return
 
-        self._state.last_retransmit_request_at[key] = now
         self._send_message_to_member(
             target_sender_id,
             RetransmitMessage(
@@ -554,11 +567,13 @@ class CustomerSequencerEngine:
         global_seq: int,
         now: float,
     ) -> None:
-        last = self._state.last_retransmit_sequence_request_at.get(global_seq, 0.0)
-        if now - last < self.config.retransmit_retry_sec:
+        if not self._state.schedule_sequence_retransmit(
+            global_seq=global_seq,
+            now_monotonic=now,
+            retry_interval_sec=self.config.retransmit_retry_sec,
+        ):
             return
 
-        self._state.last_retransmit_sequence_request_at[global_seq] = now
         self._send_message_to_member(
             target_sender_id,
             RetransmitMessage(

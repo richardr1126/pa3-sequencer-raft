@@ -13,6 +13,8 @@ class CustomerSequencerConfig:
     udp_bind_port: int = 12001
     command_timeout_sec: float = 10.0
     retransmit_retry_sec: float = 0.3
+    retransmit_scan_window: int = 512
+    gc_every_deliveries: int = 128
     drop_probability: float = 0.0
 
     @property
@@ -66,5 +68,9 @@ class CustomerSequencerConfig:
             udp_bind_port=bind_port,
             command_timeout_sec=float(os.getenv("CUSTOMER_SEQUENCER_COMMAND_TIMEOUT_SEC", "10.0")),
             retransmit_retry_sec=float(os.getenv("CUSTOMER_SEQUENCER_RETRY_SEC", "0.3")),
+            retransmit_scan_window=int(
+                os.getenv("CUSTOMER_SEQUENCER_RETRANSMIT_SCAN_WINDOW", "512")
+            ),
+            gc_every_deliveries=int(os.getenv("CUSTOMER_SEQUENCER_GC_EVERY", "128")),
             drop_probability=float(os.getenv("CUSTOMER_SEQUENCER_DROP_PROB", "0.0")),
         )

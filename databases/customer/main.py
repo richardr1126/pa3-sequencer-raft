@@ -27,6 +27,7 @@ from databases.customer.api import CustomerDomainApi
 from databases.customer.db import init_db, make_session_factory
 from databases.customer.sequencer import (
     CustomerSequencerEngine,
+    CustomerSequencerError,
     CustomerSequencerConfig,
 )
 
@@ -101,6 +102,8 @@ class CustomerDbService(customer_db_pb2_grpc.CustomerDbServiceServicer):
 
     @staticmethod
     def _abort_from_exception(context: grpc.ServicerContext, exc: Exception) -> None:
+        if isinstance(exc, CustomerSequencerError):
+            context.abort(grpc.StatusCode.UNAVAILABLE, str(exc))
         if isinstance(exc, ValueError):
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
         if isinstance(exc, IntegrityError):

@@ -1,5 +1,6 @@
 """Retransmit/NACK helpers for missing request/sequence detection."""
 
+from .config import CustomerSequencerConfig
 from .messages import RetransmitMessage, parse_request_key
 from .state_store import SequencerState
 
@@ -8,18 +9,20 @@ def collect_missing_sequence_retransmits(
     *,
     state: SequencerState,
     member_count: int,
-    retry_interval_sec: float,
+    config: CustomerSequencerConfig,
     now_monotonic: float,
     self_id: int,
 ) -> list[tuple[int, RetransmitMessage]]:
     retransmits: list[tuple[int, RetransmitMessage]] = []
 
     def maybe_add(global_seq: int) -> None:
-        last = state.last_retransmit_sequence_request_at.get(global_seq, 0.0)
-        if now_monotonic - last < retry_interval_sec:
+        if not state.schedule_sequence_retransmit(
+            global_seq=global_seq,
+            now_monotonic=now_monotonic,
+            retry_interval_sec=config.retransmit_retry_sec,
+        ):
             return
 
-        state.last_retransmit_sequence_request_at[global_seq] = now_monotonic
         target_id = global_seq % member_count
         retransmits.append(
             (
@@ -38,7 +41,11 @@ def collect_missing_sequence_retransmits(
     if next_expected not in state.sequence_request_id_by_global:
         maybe_add(next_expected)
 
-    for seq in range(state.highest_contiguous_sequence + 1, state.highest_seen_sequence + 1):
+    upper_bound = min(
+        state.highest_seen_sequence,
+        state.highest_contiguous_sequence + max(config.retransmit_scan_window, 1),
+    )
+    for seq in range(state.highest_contiguous_sequence + 1, upper_bound + 1):
         if seq in state.sequence_request_id_by_global:
             continue
         maybe_add(seq)
@@ -49,19 +56,21 @@ def collect_missing_sequence_retransmits(
 def collect_missing_request_retransmits(
     *,
     state: SequencerState,
-    retry_interval_sec: float,
+    config: CustomerSequencerConfig,
     now_monotonic: float,
     self_id: int,
 ) -> list[tuple[int, RetransmitMessage]]:
     retransmits: list[tuple[int, RetransmitMessage]] = []
 
     def maybe_add(sender_id: int, local_seq: int) -> None:
-        key = (sender_id, local_seq)
-        last = state.last_retransmit_request_at.get(key, 0.0)
-        if now_monotonic - last < retry_interval_sec:
+        if not state.schedule_request_retransmit(
+            sender_id=sender_id,
+            local_seq=local_seq,
+            now_monotonic=now_monotonic,
+            retry_interval_sec=config.retransmit_retry_sec,
+        ):
             return
 
-        state.last_retransmit_request_at[key] = now_monotonic
         retransmits.append(
             (
                 sender_id,
@@ -84,7 +93,11 @@ def collect_missing_request_retransmits(
             continue
 
         seen_locals = track.request_locals_seen
-        for local_seq in range(highest_contiguous_local + 1, highest_seen_local + 1):
+        upper_bound = min(
+            highest_seen_local,
+            highest_contiguous_local + max(config.retransmit_scan_window, 1),
+        )
+        for local_seq in range(highest_contiguous_local + 1, upper_bound + 1):
             if local_seq in seen_locals:
                 continue
             maybe_add(sender_id, local_seq)

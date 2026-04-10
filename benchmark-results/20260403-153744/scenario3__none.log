@@ -1,0 +1,13 @@
+--------------------------------------------------
+Online Marketplace Benchmark
+--------------------------------------------------
+Sellers server: marketplace-sellers.richardr.dev:80
+Buyers server: marketplace-buyers.richardr.dev:80
+Operations per client: 1000
+Runs per scenario: 5
+Max workers: auto
+Failure mode: none (k8s)
+--------------------------------------------------
+
+Scenario 3: 100 seller(s) + 100 buyer(s)
+--------------------------------------------------
